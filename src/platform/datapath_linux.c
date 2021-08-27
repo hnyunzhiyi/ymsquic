@@ -343,6 +343,26 @@ QuicDataPathWorkerThread(
     _In_ void* Context
     );
 
+void QuicDataPathSetOpt(QUIC_DATAPATH_BINDING *Path,  _In_ int Level,  _In_ int Optname, _In_ const void *Optval,  _In_ socklen_t Optlen)
+{
+	uint32_t SocketCount = Path->Datapath->ProcCount;
+	QUIC_SOCKET_CONTEXT *SocketContext = Path->SocketContexts;	
+
+	for(uint32_t i = 0; i < SocketCount; i++)
+	{
+		setsockopt(SocketContext[i].SocketFd, Level, Optname, Optval, Optlen);
+	}	
+	return;
+}
+
+void QuicDataPathGetOpt(QUIC_DATAPATH_BINDING *Path,  _In_ int Level,  _In_ int Optname, _Inout_  void *Optval, _Inout_ socklen_t *Optlen)
+{
+    uint32_t SocketCount = Path->Datapath->ProcCount;
+    QUIC_SOCKET_CONTEXT *SocketContext = Path->SocketContexts;
+
+    getsockopt(SocketContext[0].SocketFd, Level, Optname, Optval, Optlen);
+    return;
+}
 QUIC_STATUS
 QuicProcessorContextInitialize(
     _In_ QUIC_DATAPATH* Datapath,

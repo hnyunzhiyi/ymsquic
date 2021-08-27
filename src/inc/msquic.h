@@ -25,6 +25,12 @@ Supported Platforms:
 #pragma once
 #endif
 
+
+#include <sys/epoll.h>
+#include "quic_platform.h"
+#include "quic_platform_linux.h"
+#include "quic_datapath.h"
+
 #pragma warning(disable:4201)  // nonstandard extension used: nameless struct/union
 #pragma warning(disable:4214)  // nonstandard extension used: bit field types other than int
 
@@ -37,6 +43,7 @@ Supported Platforms:
 #else
 #error "Unsupported Platform"
 #endif
+
 
 #if defined(__cplusplus)
 extern "C" {
@@ -69,6 +76,64 @@ typedef _In_range_(0, QUIC_UINT62_MAX) uint64_t QUIC_UINT62;
 // send in a resumption ticket.
 //
 #define QUIC_MAX_RESUMPTION_APP_DATA_LENGTH     1000
+
+#define CLOSE_CONNECTION_LIST   1
+#define DELETE_NODE_LIST        4
+#define READ_CONNECT_LIST       5
+
+#define READ                    0
+#define WRITE                   1
+#define CLIENT                  2
+#define SERVER                  3
+
+#define YMSQUIC_EPOLLIN         1
+#define YMSQUIC_EPOLLOUT        2
+
+#define YMSQUIC_EPOLL_CTL_ADD   1
+#define YMSQUIC_EPOLL_CTL_MOD   2
+#define YMSQUIC_EPOLL_CTL_DEL   3
+
+#define UNREAD         			1
+#define EXIT     			    2
+#define FLUSH_RECV              3
+#define GET_CHANNELID   		"GET_CHANNELID"
+
+typedef struct _QUIC_SOCKFD_ QUIC_SOCKFD;
+typedef struct _List_Msg
+{
+	QUIC_LIST_ENTRY Data;
+    QUIC_DISPATCH_LOCK Lock;
+    QUIC_EVENT REvent;
+	QUIC_EVENT WEvent;
+	QUIC_THREAD Thread;
+    uint64_t Count;
+}ListMsg;
+
+typedef struct _CHANNEL_DATA_{
+	ListMsg RecvList;
+	QUIC_LIST_ENTRY Node;
+    HQUIC Connect;
+	QUIC_SOCKFD* Context;
+	int   ChannelID;
+	int Attribute;
+	uint32_t EventType;
+}CHANNEL_DATA;
+
+typedef struct _Notify_Mes
+{
+    CHANNEL_DATA *Channel;
+    QUIC_LIST_ENTRY Node;
+	uint32_t EventType;
+}Notify_Mes;
+
+typedef struct _Recv_Buffer {
+	QUIC_LIST_ENTRY Node;
+	QUIC_RECV_DATAGRAM* FreeAddr;
+    unsigned char Finish;
+    uint64_t Length;
+    const uint8_t *Data;
+   	int State;
+}Recv_Buffer;
 
 typedef enum QUIC_EXECUTION_PROFILE {
     QUIC_EXECUTION_PROFILE_LOW_LATENCY,         // Default
@@ -945,6 +1010,8 @@ typedef struct QUIC_STREAM_EVENT {
             _Field_range_(1, UINT32_MAX)
             /* in */    uint32_t BufferCount;
             /* in */    QUIC_RECEIVE_FLAGS Flags;
+	    uint8_t *ptr;
+	    uint64_t ptr_length;
         } RECEIVE;
         struct {
             BOOLEAN Canceled;
@@ -1042,6 +1109,136 @@ QUIC_STATUS
     _In_opt_ void* ClientSendContext
     );
 
+//////////////////////////////////////////////////////////////////////////////////////
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void	
+(QUIC_API * QUIC_OPERATE_SET_SOCKET_OPT)( _In_ _Pre_defensive_ CHANNEL_DATA* Channel,
+	_In_ int Level, 
+	_In_ int Optname, 
+	_In_ const void *Optval, 
+	_In_ socklen_t Optlen);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+(QUIC_API * QUIC_OPERATE_GET_SOCKET_OPT)( _In_ _Pre_defensive_ CHANNEL_DATA* Channel,
+    _In_ int Level, 
+	_In_ int Optname, 
+	_In_ void *Optval,
+	_In_ socklen_t *Optlen);
+
+typedef 
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void*
+QUIC_API
+(QUIC_API * QUIC_OPERATE_SOCKET)(_In_ int Af, 
+	_In_ int Type, 
+	_In_ int Protocol,
+	_In_ QUIC_SOCKFD* Context);
+
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+int
+QUIC_API
+(QUIC_API * QUIC_OPERATE_BIND)(_In_ CHANNEL_DATA* Channel, 
+	_In_ const char *DestAddr, 
+	_In_ uint32_t Port);
+
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+QUIC_STATUS
+QUIC_API
+(QUIC_API * QUIC_OPERATE_CONNECT)(_In_ CHANNEL_DATA* Channel, 
+	_In_ const char *DstIp,
+	 _In_ uint32_t UdpPort);
+
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+QUIC_STATUS
+QUIC_API
+(QUIC_API * QUIC_OPERATE_SEND)(_In_ CHANNEL_DATA* Channel,
+	 _Inout_ void *Buffer);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+uint64_t
+QUIC_API
+(QUIC_API * QUIC_OPERATE_RECV)(_In_ CHANNEL_DATA* Channel,
+	_Inout_ uint8_t *Buffer,
+	_In_ uint64_t Len, 
+	_In_ int *Flags);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QUIC_API
+(QUIC_API * QUIC_OPERATE_CLOSE)(_In_ CHANNEL_DATA* Channel);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+QUIC_STATUS
+QUIC_API
+(QUIC_API * QUIC_OPERATE_LISTEN)(_In_ CHANNEL_DATA* Channel);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void*
+QUIC_API
+(QUIC_API * QUIC_OPERATE_ACCEPT)(_In_ CHANNEL_DATA* Channel);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+int
+QUIC_API
+(QUIC_API * QUIC_OPERATE_GET_PEERNAME)(_In_ CHANNEL_DATA* Channel,
+	 _Inout_ struct sockaddr* PeerAddr,
+	 _In_ socklen_t* addrlen);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+int
+QUIC_API
+(QUIC_API * QUIC_OPERATE_GET_SOCKNAME)(_In_ CHANNEL_DATA* Channel,
+     _Inout_ struct sockaddr* LocalAddr,
+     _In_ socklen_t* addrlen);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+int
+QUIC_API
+(QUIC_API * QUIC_OPERATE_FCNTL)(_In_ CHANNEL_DATA* Channel,
+     _In_ int Cmd,
+     _In_ long Arg);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+CHANNEL_DATA*
+QUIC_API
+(QUIC_API * QUIC_OPERATE_EPOLLCREATE)(_In_ QUIC_SOCKFD* Context);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+int
+QUIC_API
+(QUIC_API * QUIC_OPERATE_EPOLLCTL)(_In_ CHANNEL_DATA* EpChannel,
+	_In_ int Op, 
+	_Inout_ CHANNEL_DATA* Channel,
+	_Inout_ struct epoll_event *Event);
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+uint32_t
+QUIC_API
+(QUIC_API * QUIC_OPERATE_EPOLLWAIT)(_In_ CHANNEL_DATA* EpChannel, 
+	_Inout_ struct epoll_event * Events, 
+	_In_ int Maxevents, 
+	_In_ int TimeOut);
+
 //
 // Completes a previously pended receive callback.
 //
@@ -1063,6 +1260,7 @@ QUIC_STATUS
     _In_ _Pre_defensive_ HQUIC Stream,
     _In_ BOOLEAN IsEnabled
     );
+
 
 //
 // Datagrams
@@ -1128,7 +1326,37 @@ typedef struct QUIC_API_TABLE {
 
     QUIC_DATAGRAM_SEND_FN               DatagramSend;
 
+
+	QUIC_OPERATE_SET_SOCKET_OPT         SetSockOpt;
+	QUIC_OPERATE_GET_SOCKET_OPT         GetSockOpt;
+	QUIC_OPERATE_SOCKET                 TcpSocket;
+    QUIC_OPERATE_BIND                   TcpBind;
+	QUIC_OPERATE_CONNECT                TcpConnect;
+	QUIC_OPERATE_SEND                   TcpSend;
+	QUIC_OPERATE_RECV                   TcpRecv;
+	QUIC_OPERATE_CLOSE                  TcpClose;	
+	QUIC_OPERATE_LISTEN                 TcpListen;
+	QUIC_OPERATE_ACCEPT                 TcpAccept;
+	QUIC_OPERATE_GET_PEERNAME			MsQuicGetPeerName;
+	QUIC_OPERATE_GET_SOCKNAME			MsQuicGetSockName;
+	QUIC_OPERATE_FCNTL                  MsQuicFcntl;
+
+    QUIC_OPERATE_EPOLLCREATE            EpollCreate;
+    QUIC_OPERATE_EPOLLCTL               EpollCtl;
+    QUIC_OPERATE_EPOLLWAIT              EpollWait;
 } QUIC_API_TABLE;
+
+typedef struct _QUIC_SOCKFD_ {
+    HQUIC Configuration;
+    HQUIC Registration;
+	CHANNEL_DATA* NotifyChannel;
+	CHANNEL_DATA MainChannel;
+    const QUIC_API_TABLE* MsQuic;
+    QUIC_ADDR Addr;  
+    int ChannelID;
+	QUIC_BUFFER Alpn[6];
+	int Type;
+} QUIC_SOCKFD;
 
 //
 // Opens the API library and initializes it if this is the first call for the
@@ -1146,6 +1374,7 @@ MsQuicOpen(
 // Cleans up the function table returned from MsQuicOpen and releases the
 // reference on the API.
 //
+
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QUIC_API

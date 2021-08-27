@@ -442,6 +442,15 @@ QuicDataPathBindingSendTo(
     _In_ QUIC_DATAPATH_SEND_CONTEXT* SendContext
     );
 
+void QuicDataPathSetOpt(QUIC_DATAPATH_BINDING *Path, 
+	_In_ int Level, _In_ int Optname, 
+	_In_ const void *Optval, _In_ socklen_t Optlen);
+
+void QuicDataPathGetOpt(QUIC_DATAPATH_BINDING *Path,  
+	_In_ int Level,  _In_ int Optname, 
+	_Inout_  void *Optval, _Inout_ socklen_t *Optlen);
+
+
 //
 // Sends data to a remote host. Note, the buffer must remain valid for
 // the duration of the send operation.

@@ -288,16 +288,16 @@ function CMake_Execute() {
    cd $BuildDir
    export version=$(which cmake3)
    if [ -n "${version}" ];then
-       compiler=$(echo __GNUC__|$compiler --version)
-	   MAJOR=`echo ${compiler} | awk  -F 'version '  '{print $NF}' | awk -F '.'  '{print $1}'`
-	   MINOR=`echo ${compiler} | awk  -F 'version '  '{print $NF}' | awk -F '.'  '{print $2}'`
-	   if [[ "$MAJOR" -ge 3 ]];then
-	       if [[ "$MAJOR" -eq 3 ]] && [[ "$MINOR" -lt 5 ]];then
-	           cmake $Arguments
-	       else
-		       cmake3 $Arguments
-	       fi
-       fi
+	compiler=$(echo __GNUC__|$version --version)
+	MAJOR=`echo ${compiler} | awk  -F 'version '  '{print $NF}' | awk -F '.'  '{print $1}'`
+	MINOR=`echo ${compiler} | awk  -F 'version '  '{print $NF}' | awk -F '.'  '{print $2}'`
+	if [[ "$MAJOR" -ge 3 ]];then
+	    if [[ "$MAJOR" -eq 3 ]] && [[ "$MINOR" -lt 5 ]];then
+	        cmake $Arguments
+	    else
+		cmake3 $Arguments
+	    fi
+        fi
    else
     	cmake $Arguments
    fi
@@ -377,7 +377,7 @@ fi
 # Generate the build files.
 CMake_Generate
 
-if [[ "$ConfigureOnly" = "false" ]];then
+if  [[ "$ConfigureOnly" = "false" ]];then
     CMake_Build
 fi
 

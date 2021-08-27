@@ -281,6 +281,8 @@ QuicConnFree(
     //
     // Free up packet space if it wasn't freed by QuicConnUninitialize
     //
+    //
+    //
     for (uint32_t i = 0; i < ARRAYSIZE(Connection->Packets); i++) {
         if (Connection->Packets[i] != NULL) {
             QuicPacketSpaceUninitialize(Connection->Packets[i]);
@@ -317,6 +319,8 @@ QuicConnFree(
     if (Connection->Worker != NULL) {
         QuicOperationQueueClear(Connection->Worker, &Connection->OperQ);
     }
+
+
     if (Connection->ReceiveQueue != NULL) {
         QUIC_RECV_DATAGRAM* Datagram = Connection->ReceiveQueue;
         do {
@@ -330,7 +334,7 @@ QuicConnFree(
         QuicLibraryReleaseBinding(Path->Binding);
         Path->Binding = NULL;
     }
-    QuicDispatchLockUninitialize(&Connection->ReceiveQueueLock);
+
     QuicOperationQueueUninitialize(&Connection->OperQ);
     QuicStreamSetUninitialize(&Connection->Streams);
     QuicSendBufferUninitialize(&Connection->SendBuffer);
@@ -366,6 +370,20 @@ QuicConnFree(
         &MsQuicLib.PerProc[QuicProcCurrentNumber()].ConnectionPool,
         Connection);
 
+	
+    CHANNEL_DATA* Channel = Connection->Channel;
+	QUIC_SOCKFD* Context = Channel->Context;
+
+	if (Context->NotifyChannel != NULL)
+	{
+		__sync_add_and_fetch(&Channel->RecvList.Count, 1);
+		QuicEventSet(Context->NotifyChannel->RecvList.REvent);
+	}
+	else
+	{
+    	QuicEventSet(Channel->RecvList.REvent);
+	}
+
 #if DEBUG
     InterlockedDecrement(&MsQuicLib.ConnectionCount);
 #endif
@@ -381,6 +399,8 @@ QuicConnShutdown(
     )
 {
     uint32_t CloseFlags = QUIC_CLOSE_APPLICATION;
+
+
     if (Flags & QUIC_CONNECTION_SHUTDOWN_FLAG_SILENT ||
         (!Connection->State.Started && !QuicConnIsServer(Connection))) {
         CloseFlags |= QUIC_CLOSE_SILENT;
@@ -1145,18 +1165,17 @@ QuicConnTimerExpired(
     _In_ uint64_t TimeNow
     )
 {
-    uint32_t i = 0;
+    uint32_t i = 0, z = 0;
     QUIC_CONN_TIMER_ENTRY Temp[QUIC_CONN_TIMER_COUNT];
     BOOLEAN FlushSendImmediate = FALSE;
-
+	
     while (i < ARRAYSIZE(Connection->Timers) &&
-           Connection->Timers[i].ExpirationTime <= TimeNow) {
+        Connection->Timers[i].ExpirationTime <= TimeNow) {
         Connection->Timers[i].ExpirationTime = UINT64_MAX;
         ++i;
     }
 
-    QUIC_DBG_ASSERT(i != 0);
-
+	QUIC_DBG_ASSERT(i != 0);
     QuicCopyMemory(
         Temp,
         Connection->Timers,
@@ -1184,7 +1203,8 @@ QuicConnTimerExpired(
         };
         QuicTraceLogConnVerbose("TimerExpired: %s timer expired",
             TimerNames[Temp[j].Type]);
-        if (Temp[j].Type == QUIC_CONN_TIMER_ACK_DELAY) {
+        
+		if (Temp[j].Type == QUIC_CONN_TIMER_ACK_DELAY) {
             QuicTraceLogVerbose("ConnExecTimerOper: [conn][%p] Execute: %u",
                 Connection,
                 QUIC_CONN_TIMER_ACK_DELAY);
@@ -1199,7 +1219,7 @@ QuicConnTimerExpired(
             QUIC_OPERATION* Oper;
             if ((Oper = QuicOperationAlloc(Connection->Worker, QUIC_OPER_TYPE_TIMER_EXPIRED)) != NULL) {
                 Oper->TIMER_EXPIRED.Type = Temp[j].Type;
-                QuicConnQueueOper(Connection, Oper);
+				QuicConnQueueOper(Connection, Oper);
             } else {
                 QuicTraceLogError(
                     "AllocFailure: Allocation of '%s' failed. (%u bytes)",
@@ -1253,12 +1273,12 @@ QuicConnOnShutdownComplete(
     _In_ QUIC_CONNECTION* Connection
     )
 {
+
     Connection->State.SendShutdownCompleteNotif = FALSE;
     if (Connection->State.HandleShutdown) {
         return;
     }
     Connection->State.HandleShutdown = TRUE;
-
     QuicTraceLogVerbose(
         "ConnShutdownComplete: [conn][%p] Shutdown complete, PeerFailedToAcknowledged=%hhu.",
         Connection,
@@ -1324,6 +1344,7 @@ QuicConnTryClose(
     BOOLEAN ClosedRemotely = !!(Flags & QUIC_CLOSE_REMOTE);
     BOOLEAN SilentClose = !!(Flags & QUIC_CLOSE_SILENT);
 
+	
     if ((ClosedRemotely && Connection->State.ClosedRemotely) ||
         (!ClosedRemotely && Connection->State.ClosedLocally)) {
         //
@@ -1773,7 +1794,7 @@ Exit:
     if (ServerName != NULL) {
         QUIC_FREE(ServerName);
     }
-
+	
     if (QUIC_FAILED(Status)) {
         QuicConnCloseLocally(
             Connection,
@@ -2985,7 +3006,6 @@ QuicConnRecvHeader(
                 // a version negotation packet means there is a version
                 // mismatch, so abandon the connect attempt.
                 //
-
                 QuicConnCloseLocally(
                     Connection,
                     QUIC_CLOSE_INTERNAL_SILENT | QUIC_CLOSE_QUIC_STATUS,
@@ -3346,7 +3366,7 @@ QuicConnRecvDecryptAndAuthenticate(
                         "PacketRxStatelessReset: [S][RX][-] SR %s",
                         QuicCidBufToStr(PacketResetToken, QUIC_STATELESS_RESET_TOKEN_LENGTH).Buffer);
                     QuicTraceLogConnInfo(
-                        "RecvStatelessReset: Received stateless reset");
+                        "RecvStatelessReset:Received stateless reset");
                     QuicConnCloseLocally(
                         Connection,
                         QUIC_CLOSE_INTERNAL_SILENT | QUIC_CLOSE_QUIC_STATUS,
@@ -4169,6 +4189,7 @@ QuicConnRecvFrames(
             if (Frame.ApplicationClosed) {
                 Flags |= QUIC_CLOSE_APPLICATION;
             }
+
             QuicConnTryClose(
                 Connection,
                 Flags,
@@ -4502,6 +4523,10 @@ QuicConnRecvDatagrams(
     QUIC_RECV_DATAGRAM** ReleaseChainTail = &ReleaseChain;
     uint32_t ReleaseChainCount = 0;
     QUIC_RECEIVE_PROCESSING_STATE RecvState = { FALSE, FALSE, 0 };
+	Recv_Buffer* ReleaseBuffer = NULL;
+	CHANNEL_DATA *Channel = NULL;
+
+
     RecvState.PartitionIndex = QuicPartitionIdGetIndex(Connection->PartitionID);
     if (Connection->Registration && Connection->Registration->SplitPartitioning) {
         RecvState.PartitionIndex =
@@ -4648,7 +4673,6 @@ QuicConnRecvDatagrams(
                 Cipher,
                 &RecvState);
             BatchCount = 0;
-
             if (Packet->IsShortHeader) {
                 break; // Short header packets aren't followed by additional packets.
             }
@@ -4657,11 +4681,9 @@ QuicConnRecvDatagrams(
             // Move to the next QUIC packet (if available) and reset the packet
             // state.
             //
-
         NextPacket:
 
             Packet->Buffer += Packet->BufferLength;
-
             Packet->ValidatedHeaderInv = FALSE;
             Packet->ValidatedHeaderVer = FALSE;
             Packet->ValidToken = FALSE;
@@ -4691,10 +4713,20 @@ QuicConnRecvDatagrams(
                         &RecvState);
                     BatchCount = 0;
                 }
-                QuicDataPathBindingReturnRecvDatagrams(ReleaseChain);
-                ReleaseChain = NULL;
-                ReleaseChainTail = &ReleaseChain;
-                ReleaseChainCount = 0;
+				
+
+			Channel = Connection->Channel;		
+       		ReleaseBuffer = (Recv_Buffer*)QuicAlloc(sizeof(Recv_Buffer));
+        	QUIC_DBG_ASSERT(ReleaseBuffer != NULL);
+        	QuicZeroMemory(ReleaseBuffer, sizeof(Recv_Buffer));
+        	ReleaseBuffer->FreeAddr = ReleaseChain;
+        	QuicDispatchLockAcquire(&Channel->RecvList.Lock);
+        	QuicListInsertTail(&Channel->RecvList.Data, &ReleaseBuffer->Node);
+        	QuicDispatchLockRelease(&Channel->RecvList.Lock);
+
+			ReleaseChain = NULL;
+            ReleaseChainTail = &ReleaseChain;
+            ReleaseChainCount = 0;
             }
         }
     }
@@ -4710,17 +4742,27 @@ QuicConnRecvDatagrams(
         BatchCount = 0;
     }
 
+	
     if (RecvState.ResetIdleTimeout) {
         QuicConnResetIdleTimeout(Connection);
-    }
+   	 }
 
     if (ReleaseChain != NULL) {
-        QuicDataPathBindingReturnRecvDatagrams(ReleaseChain);
-    }
+		Channel = Connection->Channel;
+        ReleaseBuffer = (Recv_Buffer*)QuicAlloc(sizeof(Recv_Buffer));
+		QUIC_DBG_ASSERT(ReleaseBuffer != NULL);
+			
+		QuicZeroMemory(ReleaseBuffer, sizeof(Recv_Buffer));
+        ReleaseBuffer->FreeAddr = ReleaseChain;
+	
+    	QuicDispatchLockAcquire(&Channel->RecvList.Lock);
+    	QuicListInsertTail(&Channel->RecvList.Data, &ReleaseBuffer->Node);
+		QuicDispatchLockRelease(&Channel->RecvList.Lock);
+	}
 
-    if (QuicConnIsServer(Connection) &&
-        Connection->Stats.Recv.ValidPackets == 0 &&
-        !Connection->State.ClosedLocally) {
+		if (QuicConnIsServer(Connection) &&
+        	Connection->Stats.Recv.ValidPackets == 0 &&
+        	!Connection->State.ClosedLocally) {
         //
         // The packet(s) that created this connection weren't valid. We should
         // immediately throw away the connection.
@@ -4874,7 +4916,8 @@ QuicConnProcessUdpUnreachable(
         //
         // Close the connection since the peer is unreachable.
         //
-        QuicConnCloseLocally(
+        
+		QuicConnCloseLocally(
             Connection,
             QUIC_CLOSE_INTERNAL_SILENT | QUIC_CLOSE_QUIC_STATUS,
             (uint64_t)QUIC_STATUS_UNREACHABLE,

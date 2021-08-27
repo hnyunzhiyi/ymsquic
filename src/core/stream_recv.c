@@ -244,6 +244,8 @@ QuicStreamProcessStreamFrame(
     QUIC_STATUS Status;
     BOOLEAN ReadyToDeliver = FALSE;
     uint64_t EndOffset = Frame->Offset + Frame->Length;
+	struct _Recv_Buffer *Addr = NULL;
+	uint32_t State = 0;
 
     if (Stream->Flags.RemoteNotAllowed) {
         QuicTraceLogError(
@@ -316,12 +318,13 @@ QuicStreamProcessStreamFrame(
         // Write any nonduplicate data to the receive buffer.
         // QuicRecvBufferWrite will indicate if there is data to deliver.
         //
+       
         Status =
-            QuicRecvBufferWrite(
+            QuicRecvBufferCopy(
+				Stream->Connection,
                 &Stream->RecvBuffer,
-                Frame->Offset,
-                (uint16_t)Frame->Length,
-                Frame->Data,
+                (void*)Frame,
+				&State,
                 &WriteLength,
                 &ReadyToDeliver);
         if (QUIC_FAILED(Status)) {
@@ -352,20 +355,57 @@ QuicStreamProcessStreamFrame(
         Stream->Connection->Stats.Recv.TotalStreamBytes += Frame->Length;
     }
 
-    if (Frame->Fin) {
+    if (Frame->Fin)
+    {
         Stream->RecvMaxLength = EndOffset;
-        if (Stream->RecvBuffer.BaseOffset == Stream->RecvMaxLength) {
-            //
-            // All data delivered. Deliver the FIN.
-            //
-            ReadyToDeliver = TRUE;
-        }
-    }
-
-    if (ReadyToDeliver) {
         Stream->Flags.ReceiveDataPending = TRUE;
         QuicStreamRecvQueueFlush(Stream);
+		ReadyToDeliver = TRUE;
     }
+	
+	if (State || !ReadyToDeliver)
+	{
+		goto Error;
+	}
+
+	CHANNEL_DATA* Channel = Stream->Connection->Channel;
+	QUIC_SOCKFD* Context = Channel->Context;
+
+	if ((Context->NotifyChannel == NULL) || (Channel->EventType == YMSQUIC_EPOLLIN))
+	{
+		Addr = (Recv_Buffer*)QuicAlloc(sizeof(Recv_Buffer));
+		if (Addr == NULL)
+		{
+			Status = QUIC_STATUS_INVALID_STATE;
+        	goto Error;
+		}
+		QuicZeroMemory(Addr, sizeof(Recv_Buffer));
+    	Addr->Finish = Frame->Fin;
+    	Addr->Length = Frame->Length;
+    	Addr->Data = Frame->Data;
+    	Addr->State = UNREAD;
+		Addr->FreeAddr = NULL;
+
+		Channel = Stream->Connection->Channel;
+		QuicDispatchLockAcquire(&Channel->RecvList.Lock);
+		QuicListInsertTail(&Channel->RecvList.Data, &Addr->Node);
+		QuicDispatchLockRelease(&Channel->RecvList.Lock);
+
+    	if (Frame->Fin)
+    	{
+			__sync_add_and_fetch(&Channel->RecvList.Count, 1);
+        	if (Channel->EventType == YMSQUIC_EPOLLIN)
+        	{
+				QuicEventSet(Context->NotifyChannel->RecvList.REvent);
+        	}
+        	else
+        	{
+            	QuicEventSet(Channel->RecvList.REvent);
+        	}
+    	}
+	}
+
+	Status = QUIC_STATUS_SUCCESS;
 
     QuicTraceLogStreamVerbose(
         "Receive Stream: Received %hu bytes, offset=%lu Ready=%hhu",

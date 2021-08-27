@@ -5,6 +5,7 @@
 
 --*/
 
+
 typedef struct QUIC_RECV_BUFFER {
 
     //
@@ -124,6 +125,19 @@ QuicRecvBufferWrite(
     _Inout_ uint64_t* WriteLength,
     _Out_ BOOLEAN* ReadyToRead
     );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+QUIC_STATUS
+QuicRecvBufferCopy(
+	 _In_ QUIC_CONNECTION* Connection,
+    _In_ QUIC_RECV_BUFFER* RecvBuffer,
+    _In_ void *Frame,
+	_In_ uint32_t *State,
+	_Inout_ uint64_t* WriteLength,
+    _Out_ BOOLEAN* ReadyToRead
+    );
+
+
 
 //
 // Returns a pointer into the buffer for data ready to be delivered

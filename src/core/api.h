@@ -8,6 +8,17 @@
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QUIC_API
+MsQuicGetConnectParamPort( _In_ _Pre_defensive_ HQUIC ConnectID);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+MsQuicCloseList( _In_ _Pre_defensive_ HQUIC Connection);
+
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
 MsQuicRegistrationOpen(
     _In_opt_ const QUIC_REGISTRATION_CONFIG* Config,
     _Outptr_ _At_(*Registration, __drv_allocatesMem(Mem)) _Pre_defensive_
@@ -127,6 +138,13 @@ MsQuicConnectionShutdown(
     _In_ QUIC_CONNECTION_SHUTDOWN_FLAGS Flags,
     _In_ _Pre_defensive_ QUIC_UINT62 ErrorCode
     );
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QUIC_API
+MsQuicStreamClose(
+    _In_ _Pre_defensive_ __drv_freesMem(Mem)
+        HQUIC Handle
+    );
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
@@ -169,14 +187,6 @@ MsQuicStreamOpen(
     _In_opt_ void* Context,
     _Outptr_ _At_(*Stream, __drv_allocatesMem(Mem)) _Pre_defensive_
         HQUIC *Stream
-    );
-
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-QUIC_API
-MsQuicStreamClose(
-    _In_ _Pre_defensive_ __drv_freesMem(Mem)
-        HQUIC Handle
     );
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -263,3 +273,167 @@ MsQuicDatagramSend(
     _In_ QUIC_SEND_FLAGS Flags,
     _In_opt_ void* ClientSendContext
     );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QUIC_API
+MsQuic_SetSocketOpt(_In_ _Pre_defensive_ CHANNEL_DATA* Channel, 
+	_In_ int Level, 
+	_In_ int Optname, 
+	_In_ const void *Optval,
+	_In_ socklen_t Optlen);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QUIC_API
+MsQuic_GetSocketOpt(_In_ _Pre_defensive_ CHANNEL_DATA* Channel,
+	 _In_ int Level,
+     _In_ int Optname,
+	 _Inout_  void *Optval,
+	 _Inout_ socklen_t *Optlen);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+CHANNEL_DATA*
+QUIC_API
+MsQuic_Epoll_Create(_In_ QUIC_SOCKFD* _Context);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+int
+QUIC_API
+MsQuic_Epoll_Ctl(_In_ CHANNEL_DATA* EpChannel,
+	_In_ int Op, 
+	_Inout_ CHANNEL_DATA* Channel, 
+	_Inout_ struct epoll_event *Event);
+
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+uint32_t
+QUIC_API
+MsQuic_Epoll_Wait(_In_ CHANNEL_DATA* Channel,
+	_Inout_ struct epoll_event * Events, 
+	_In_ int Maxevents,
+	 _In_ int TimeOut);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void*
+QUIC_API
+MsQuic_Socket(_In_ int Af, 
+	_In_ int Type, 
+	_In_ int Protocol, 
+	_In_ QUIC_SOCKFD* Context);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+int
+QUIC_API
+MsQuic_Bind(_In_ CHANNEL_DATA* Channel, 
+	_In_ const char* DestAddr, 
+	_In_ uint32_t Port);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QUIC_API
+QuicRemoteGetPort(_In_ const QUIC_API_TABLE* Msquic,
+	 _In_ HQUIC Handle);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+MsQuic_Parm_Init(_In_ int Mode,
+	_In_ CHANNEL_DATA* Channel);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QUIC_API
+MsQuic_Close(_In_ CHANNEL_DATA* Channel);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+StreamCallback(
+    _In_ HQUIC Stream,
+    _In_opt_ void* _Context,
+    _Inout_ QUIC_STREAM_EVENT* Event);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+ConnectionCallback(
+    _In_ HQUIC Connection,
+    _In_opt_ void* _Context,
+    _Inout_ QUIC_CONNECTION_EVENT* Event);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+MsQuic_Connect(_In_ CHANNEL_DATA* Channel,
+	 _In_ const char *DstIp,
+	 _In_ uint32_t UdpPort);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+MsQuic_Send(_In_ CHANNEL_DATA* Channel,
+	_Inout_ void *Buffer);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+BOOLEAN
+YmsQuic_SocketIsClose(_In_ void* _Channel);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+uint64_t
+QUIC_API
+MsQuic_Recv(_In_ CHANNEL_DATA* Channel, 
+	_Inout_ uint8_t* Dest, 
+	_In_ uint64_t Len, 
+	_In_ int *Flags);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+MsQuic_GetChanID(_In_ CHANNEL_DATA* Channel);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+MsQuic_CSInit(_In_ QUIC_SOCKFD *Context, 
+	_In_ HQUIC ConnectID, int Mode);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+listenerCallback(
+    _In_ HQUIC listener,
+    _In_opt_ void* _Context,
+    _Inout_ QUIC_LISTENER_EVENT* Event);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+MsQuic_Listen(_In_ CHANNEL_DATA* Channel);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void*
+QUIC_API
+MsQuic_Accept(_In_ CHANNEL_DATA* Channel);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+int
+QUIC_API
+MsQuic_GetPeerName(_In_ CHANNEL_DATA* Channel, 
+	_Inout_ struct sockaddr* PeerAddr, 
+	_In_ socklen_t* addrlen);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+int
+QUIC_API
+MsQuic_GetSockName(_In_ CHANNEL_DATA* Channel, 
+	_Inout_ struct sockaddr* LocalAddr, 
+	_In_ socklen_t* addrlen);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+int
+QUIC_API
+MsQuic_Fcntl(_In_ CHANNEL_DATA* Channel,
+	 _In_ int Cmd,
+	 _In_ long Arg);
+

@@ -199,7 +199,7 @@ MsQuicLibraryInitialize(
             &MsQuicLib.Storage);
     if (QUIC_FAILED(Status)) {
         QuicTraceLogInfo(
-            "LibraryStorageOpenFailed: [lib] Failed to open global settings, 0x%x",
+            "[lib] Failed to open global settings, 0x%x",
             Status);
         Status = QUIC_STATUS_SUCCESS; // Non-fatal, as the process may not have access
     }
@@ -1131,6 +1131,22 @@ MsQuicOpen(
 
     Api->DatagramSend = MsQuicDatagramSend;
 
+	Api->TcpSocket = MsQuic_Socket;
+	Api->TcpBind = MsQuic_Bind;
+	Api->TcpConnect = MsQuic_Connect;
+	Api->TcpSend = MsQuic_Send;
+	Api->TcpRecv =  MsQuic_Recv;
+	Api->TcpClose = MsQuic_Close;
+	Api->TcpListen = MsQuic_Listen;
+	Api->TcpAccept = MsQuic_Accept;
+	Api->EpollCreate = MsQuic_Epoll_Create;
+	Api->EpollCtl = MsQuic_Epoll_Ctl;
+	Api->EpollWait = MsQuic_Epoll_Wait;
+	Api->SetSockOpt = MsQuic_SetSocketOpt;
+	Api->GetSockOpt = MsQuic_GetSocketOpt;
+	Api->MsQuicGetPeerName = MsQuic_GetPeerName;
+	Api->MsQuicGetSockName = MsQuic_GetSockName;
+	Api->MsQuicFcntl = MsQuic_Fcntl; 
     *QuicApi = Api;
 
 Error:

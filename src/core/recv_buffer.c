@@ -223,6 +223,99 @@ QuicRecvBufferHasUnreadData(
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 QUIC_STATUS
+QuicRecvBufferCopy(
+	_In_ QUIC_CONNECTION* Connection,
+    _In_ QUIC_RECV_BUFFER* RecvBuffer,
+    _In_ void *_Frame,
+	_In_ uint32_t *State,
+    _Inout_ uint64_t* WriteLength,
+    _Out_ BOOLEAN* ReadyToRead
+    )
+{
+    QUIC_STATUS Status;
+    BOOLEAN WrittenRangesUpdated;
+    QUIC_SUBRANGE* UpdatedRange = NULL;
+	int ID = -1;
+	
+	QUIC_STREAM_EX* Frame = (QUIC_STREAM_EX*)_Frame;
+	uint64_t BufferOffset = Frame->Offset;
+	uint16_t BufferLength = (uint16_t)Frame->Length;
+	const uint8_t *Buffer = Frame->Data;
+
+    QUIC_DBG_ASSERT(BufferLength != 0);
+	
+    *ReadyToRead = FALSE;
+
+    uint64_t AbsoluteLength = BufferOffset + BufferLength;
+
+    if (AbsoluteLength <= RecvBuffer->BaseOffset) {
+        Status = QUIC_STATUS_SUCCESS;
+        *WriteLength = 0;
+		*State = 1;
+        goto Error;
+    }
+
+    if (AbsoluteLength > RecvBuffer->BaseOffset + RecvBuffer->VirtualBufferLength) {  
+        Status = QUIC_STATUS_BUFFER_TOO_SMALL;
+        goto Error;
+    }
+
+    uint64_t CurrentMaxLength = QuicRecvBufferGetTotalLength(RecvBuffer);
+    if (AbsoluteLength > CurrentMaxLength) {
+        if (AbsoluteLength - CurrentMaxLength > *WriteLength) {
+            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
+            goto Error;
+        }
+        *WriteLength = AbsoluteLength - CurrentMaxLength;
+    } else {
+        *WriteLength = 0;
+    }
+   
+	if (AbsoluteLength > RecvBuffer->BaseOffset + RecvBuffer->AllocBufferLength) {
+		uint32_t NewBufferLength = RecvBuffer->AllocBufferLength << 1;
+        while (AbsoluteLength > RecvBuffer->BaseOffset + NewBufferLength) {
+            NewBufferLength <<= 1;
+        }
+
+        Status = QuicRecvBufferResize(RecvBuffer, NewBufferLength); //重新分配长度
+
+        if (QUIC_FAILED(Status)) {
+            goto Error;
+        }
+	}	
+
+
+ 
+	UpdatedRange =
+        QuicRangeAddRange(
+            &RecvBuffer->WrittenRanges,
+            BufferOffset,
+            BufferLength,
+            &WrittenRangesUpdated);
+    if (!UpdatedRange) {
+        QuicTraceLogError(
+            "AllocFailure: Allocation of '%s' failed. (%u bytes)",
+            "recv_buffer range",
+            0);
+        Status = QUIC_STATUS_OUT_OF_MEMORY;
+        goto Error;
+    } else if (!WrittenRangesUpdated) {
+        Status = QUIC_STATUS_SUCCESS;
+		*State = 1;
+        goto Error;
+    }
+
+    *ReadyToRead = UpdatedRange->Low == 0;
+    Status = QUIC_STATUS_SUCCESS;
+
+Error:
+
+    return Status;
+}
+
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+QUIC_STATUS
 QuicRecvBufferWrite(
     _In_ QUIC_RECV_BUFFER* RecvBuffer,
     _In_ uint64_t BufferOffset,

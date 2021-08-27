@@ -527,7 +527,10 @@ typedef struct QUIC_CONNECTION {
     // Mostly test specific state.
     //
     QUIC_PRIVATE_TRANSPORT_PARAMETER TestTransportParameter;
+	bool TransferCanceled;
 
+	CHANNEL_DATA *Channel;
+	//void *Context;
 } QUIC_CONNECTION;
 
 typedef struct QUIC_SERIALIZED_RESUMPTION_STATE {
