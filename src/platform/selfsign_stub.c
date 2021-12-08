@@ -16,11 +16,10 @@ Abstract:
 _IRQL_requires_max_(PASSIVE_LEVEL)
 const QUIC_CREDENTIAL_CONFIG*
 QuicPlatGetSelfSignedCert(
-    _In_ QUIC_SELF_SIGN_CERT_TYPE Type
+    _In_ QUIC_SELF_SIGN_CERT_TYPE Type	
     )
 {
     UNREFERENCED_PARAMETER(Type);
-
     QUIC_CREDENTIAL_CONFIG* Params = malloc(sizeof(QUIC_CREDENTIAL_CONFIG));
     if (Params != NULL) {
         QuicZeroMemory(Params, sizeof(*Params));

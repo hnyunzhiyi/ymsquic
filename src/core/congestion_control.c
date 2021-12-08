@@ -113,31 +113,6 @@ QuicCongestionControlReset(
     QuicConnLogCubic(Connection);
 }
 
-//
-// Attempts to predict what the congestion window will be one RTT from now.
-//
-_IRQL_requires_max_(DISPATCH_LEVEL)
-uint32_t
-QuicCongestionControlPredictNextWindow(
-    _In_ QUIC_CONGESTION_CONTROL* Cc
-    )
-{
-    //
-    // TODO - Replace NewReno prediction logic.
-    //
-    uint32_t Wnd;
-    if (Cc->CongestionWindow < Cc->SlowStartThreshold) {
-        Wnd = Cc->CongestionWindow << 1;
-        if (Wnd > Cc->SlowStartThreshold) {
-            Wnd = Cc->SlowStartThreshold;
-        }
-    } else {
-        Wnd =
-            Cc->CongestionWindow +
-            QuicCongestionControlGetConnection(Cc)->Paths[0].Mtu;
-    }
-    return Wnd;
-}
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 uint32_t
@@ -155,7 +130,11 @@ QuicCongestionControlGetSendAllowance(
         //
         SendAllowance = 0;
 
-    } else if (!Connection->Settings.PacingEnabled || !Connection->Paths[0].GotFirstRttSample) {
+    } else if (
+        !TimeSinceLastSendValid ||
+        !Connection->Settings.PacingEnabled ||
+        !Connection->Paths[0].GotFirstRttSample ||
+        Connection->Paths[0].SmoothedRtt < MS_TO_US(QUIC_SEND_PACING_INTERVAL)) {
         //
         // Pacing is disabled or we don't have an RTT sample yet, so just send
         // everything we can.
@@ -164,53 +143,40 @@ QuicCongestionControlGetSendAllowance(
 
     } else {
         //
-        // Try to pace: if the window and RTT are large enough, the window can
-        // be split into chunks which are spread out over the RTT.
-        // SendAllowance will be set to the size of the next chunk.
+        //We are pacing, so split the congestion window into chunks which are
+        //spread out over the RTT. Calculate the current send allowance (chunk
+        //size) as the time since the last send times the pacing rate (CWND / RTT).
+        //                               
+
         //
-        uint32_t MinChunkSize = QUIC_SEND_PACING_MIN_CHUNK * Connection->Paths[0].Mtu;
-        if (Connection->Paths[0].SmoothedRtt < MS_TO_US(QUIC_SEND_PACING_INTERVAL) ||
-            Cc->CongestionWindow < MinChunkSize ||
-            !TimeSinceLastSendValid) {
-            //
-            // Either the RTT is too small (i.e. it cannot be split into
-            // multiple intervals based on the timer granularity) or the window
-            // is too small (i.e. it cannot be split into chunks larger than
-            // MinChunkSize) for us to use pacing, or this is the first send,
-            // in which case the pacing formula (which uses the time since the
-            // last send) is invalid.
-            //
+        //Since the window grows via ACK feedback and since we defer packets
+        //when pacing, using the current window to calculate the pacing
+        //interval can slow the growth of the window. So instead, use the
+        //predicted window of the next round trip. In slowstart, this is double
+        //the current window. In congestion avoidance the growth function is
+        //more complicated, and we use a simple estimate of 25% growth.
+
+
+        	uint64_t EstimatedWnd;
+        	if (Cc->CongestionWindow < Cc->SlowStartThreshold) {
+            	EstimatedWnd = (uint64_t)Cc->CongestionWindow << 1;
+            	if (EstimatedWnd > Cc->SlowStartThreshold) {
+                	EstimatedWnd = Cc->SlowStartThreshold;
+            	}
+        	} else {
+            	EstimatedWnd = Cc->CongestionWindow + (Cc->CongestionWindow >> 2); // CongestionWindow * 1.25
+        	}            
+        SendAllowance =
+            (uint32_t)((EstimatedWnd * TimeSinceLastSend) / Connection->Paths[0].SmoothedRtt);
+        if (SendAllowance > (Cc->CongestionWindow - Cc->BytesInFlight)) {
             SendAllowance = Cc->CongestionWindow - Cc->BytesInFlight;
-
-        } else {
-
-            //
-            // We are pacing, so calculate the current chunk size based on how
-            // long it's been since we sent the previous chunk.
-            //
-
-            //
-            // Since the window grows via ACK feedback and since we defer
-            // packets when pacing, using the current window to calculate the
-            // pacing interval is not quite as aggressive as we'd like. Instead,
-            // use the predicted window of the next RTT.
-            //
-            uint64_t EstimatedWnd = QuicCongestionControlPredictNextWindow(Cc);
-
-            SendAllowance =
-                (uint32_t)((EstimatedWnd * TimeSinceLastSend) / Connection->Paths[0].SmoothedRtt);
-            if (SendAllowance < MinChunkSize) {
-                SendAllowance = MinChunkSize;
-            }
-            if (SendAllowance > (Cc->CongestionWindow - Cc->BytesInFlight)) {
-                SendAllowance = Cc->CongestionWindow - Cc->BytesInFlight;
-            }
-            if (SendAllowance > (Cc->CongestionWindow >> 1)) {
-                SendAllowance = Cc->CongestionWindow >> 1; // Don't send more than half the current window.
-            }
+        }
+        if (SendAllowance > (Cc->CongestionWindow >> 2)) {
+            SendAllowance = Cc->CongestionWindow >> 2; // Don't send more than a quarter of the current window.
         }
     }
     return SendAllowance;
+
 }
 
 //
@@ -232,6 +198,7 @@ QuicCongestionControlUpdateBlockedState(
         } else {
             QuicConnRemoveOutFlowBlockedReason(
                 Connection, QUIC_FLOW_BLOCKED_CONGESTION_CONTROL);
+			Connection->Send.LastFlushTime = QuicTimeUs64(); // Reset last flush time
             return TRUE;
         }
     }
@@ -250,6 +217,15 @@ QuicCongestionControlOnCongestionEvent(
 
     Cc->IsInRecovery = TRUE;
     Cc->HasHadCongestionEvent = TRUE;
+
+    //
+    //Save previous state, just in case this ends up being spurious.
+    //        
+    Cc->PrevWindowMax = Cc->WindowMax;
+    Cc->PrevWindowLastMax = Cc->WindowLastMax;
+    Cc->PrevKCubic = Cc->KCubic;
+    Cc->PrevSlowStartThreshold = Cc->SlowStartThreshold;
+    Cc->PrevCongestionWindow = Cc->CongestionWindow;
 
     Cc->WindowMax = Cc->CongestionWindow;
     if (Cc->WindowLastMax > Cc->WindowMax) {
@@ -280,7 +256,7 @@ QuicCongestionControlOnCongestionEvent(
     Cc->SlowStartThreshold =
     Cc->CongestionWindow =
         max(
-            (uint32_t)Connection->Paths[0].Mtu * Cc->InitialWindowPackets,
+            (uint32_t)Connection->Paths[0].Mtu * QUIC_PERSISTENT_CONGESTION_WINDOW_PACKETS,
             Cc->CongestionWindow * TEN_TIMES_BETA_CUBIC / 10);
 }
 
@@ -430,9 +406,14 @@ QuicCongestionControlOnDataAcknowledged(
         // DeltaT < ~2.5M (about 30min).
         //
 
-        int64_t DeltaT = TimeInCongAvoid - Cc->KCubic + US_TO_MS(SmoothedRtt);
 
-        int64_t CubicWindow =
+
+      int64_t DeltaT =
+            (int64_t)TimeInCongAvoid -
+            (int64_t)Cc->KCubic +
+            (int64_t)US_TO_MS(SmoothedRtt);
+
+	  int64_t CubicWindow =
             ((((DeltaT * DeltaT) >> 10) * DeltaT *
               (int64_t)(Connection->Paths[0].Mtu * TEN_TIMES_C_CUBIC / 10)) >> 20) +
             (int64_t)Cc->WindowMax;
@@ -543,3 +524,39 @@ QuicCongestionControlOnDataLost(
     QuicCongestionControlUpdateBlockedState(Cc, PreviousCanSendState);
     QuicConnLogCubic(QuicCongestionControlGetConnection(Cc));
 }
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicCongestionControlOnSpuriousCongestionEvent(
+    _In_ QUIC_CONGESTION_CONTROL* Cc
+    )
+{
+    if (!Cc->IsInRecovery) {
+        return;
+    }
+
+    QUIC_CONNECTION* Connection = QuicCongestionControlGetConnection(Cc);
+    BOOLEAN PreviousCanSendState = QuicCongestionControlCanSend(Cc);
+
+    QuicTraceLogError(
+        "[conn][%p] Spurious congestion event",
+        Connection);
+    //
+    //Revert to previous state.
+    //       
+    Cc->WindowMax = Cc->PrevWindowMax;
+    Cc->WindowLastMax = Cc->PrevWindowLastMax;
+    Cc->KCubic = Cc->PrevKCubic;
+    Cc->SlowStartThreshold = Cc->PrevSlowStartThreshold;
+    Cc->CongestionWindow = Cc->PrevCongestionWindow;
+
+    Cc->IsInRecovery = FALSE;
+    Cc->HasHadCongestionEvent = FALSE;
+
+    QuicCongestionControlUpdateBlockedState(Cc, PreviousCanSendState);
+    QuicConnLogCubic(Connection);
+}
+
+
+
+

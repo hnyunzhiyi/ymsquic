@@ -27,11 +27,9 @@ typedef enum QUIC_OPERATION_TYPE {
     QUIC_OPER_TYPE_TLS_COMPLETE,        // A TLS process call completed.
     QUIC_OPER_TYPE_TIMER_EXPIRED,       // A timer expired.
     QUIC_OPER_TYPE_TRACE_RUNDOWN,       // A trace rundown was triggered.
-
     //
-    // All stateless operations follow.
-    //
-
+    //All stateless operations follow.
+    //     
     QUIC_OPER_TYPE_VERSION_NEGOTIATION, // A version negotiation needs to be sent.
     QUIC_OPER_TYPE_STATELESS_RESET,     // A stateless reset needs to be sent.
     QUIC_OPER_TYPE_RETRY,               // A retry needs to be sent.
@@ -176,7 +174,7 @@ typedef struct QUIC_STATELESS_CONTEXT {
     QUIC_ADDR RemoteAddress;
     QUIC_LIST_ENTRY ListEntry;
     QUIC_HASHTABLE_ENTRY TableEntry;
-    QUIC_RECV_DATAGRAM* Datagram;
+    QUIC_RECV_DATA* Datagram;
     uint32_t CreationTimeMs;
     uint8_t HasBindingRef : 1;
     uint8_t IsProcessed : 1;

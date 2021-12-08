@@ -17,6 +17,7 @@
 #pragma warning(disable:28931) // Unused Assignment
 
 #define QUIC_API_ENABLE_INSECURE_FEATURES 1
+#define QUIC_CORE_INTERNAL 1
 
 //
 // Platform or Public Headers.
@@ -29,8 +30,11 @@
 #include "quic_var_int.h"
 #include "quic_trace.h"
 
+
 #include "msquic.h"
 #include "msquicp.h"
+#define QUIC_VERSION_ONLY 1
+#include "msquic.ver"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -41,12 +45,14 @@ extern "C" {
 //
 #include "quicdef.h"
 #include "cid.h"
+#include "mtu_discovery.h"
 #include "path.h"
 #include "transport_params.h"
 #include "lookup.h"
 #include "timer_wheel.h"
 #include "settings.h"
 #include "library.h"
+#include "operation.h"
 #include "binding.h"
 #include "api.h"
 #include "registration.h"
@@ -63,11 +69,11 @@ extern "C" {
 #include "congestion_control.h"
 #include "loss_detection.h"
 #include "send.h"
-#include "operation.h"
 #include "crypto.h"
 #include "stream.h"
 #include "stream_set.h"
 #include "datagram.h"
+#include "version_neg.h"
 #include "connection.h"
 #include "packet_builder.h"
 #include "listener.h"

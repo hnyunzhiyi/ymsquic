@@ -166,6 +166,7 @@ QuicTimerWheelResize(
                     QUIC_CONNECTION,
                     TimerLink);
             uint64_t ExpirationTime = QuicConnGetNextExpirationTime(Connection);
+            QUIC_DBG_ASSERT(TimerWheel->SlotCount != 0);
             uint32_t SlotIndex = TIME_TO_SLOT_INDEX(TimerWheel, ExpirationTime);
 
             //
@@ -194,6 +195,7 @@ QuicTimerWheelResize(
             QuicListInsertHead(Entry, &Connection->TimerLink);
         }
     }
+	QUIC_FREE(OldSlots);
 }
 
 //
@@ -311,7 +313,7 @@ QuicTimerWheelUpdateConnection(
         }
 
     } else {
-
+        QUIC_DBG_ASSERT(TimerWheel->SlotCount != 0);
         uint32_t SlotIndex = TIME_TO_SLOT_INDEX(TimerWheel, ExpirationTime);
 
         //
@@ -370,12 +372,13 @@ QuicTimerWheelUpdateConnection(
 _IRQL_requires_max_(PASSIVE_LEVEL)
 uint64_t
 QuicTimerWheelGetWaitTime(
-    _In_ QUIC_TIMER_WHEEL* TimerWheel
+    _In_ QUIC_TIMER_WHEEL* TimerWheel,
+	_In_ uint64_t TimeNow
     )
 {
     uint64_t Delay;
     if (TimerWheel->NextExpirationTime != UINT64_MAX) {
-        uint64_t TimeNow = QuicTimeUs64();
+        
         if (TimerWheel->NextExpirationTime <= TimeNow) {
             //
             // The next timer is already in the past. It needs to be processed

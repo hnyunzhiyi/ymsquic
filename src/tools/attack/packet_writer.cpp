@@ -41,9 +41,9 @@ struct TlsContext
         QUIC_CREDENTIAL_CONFIG CredConfig = {
             QUIC_CREDENTIAL_TYPE_NONE,
             QUIC_CREDENTIAL_FLAG_CLIENT & QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION,
-            NULL,
-            NULL
+            NULL, NULL, NULL, NULL
         };
+
         VERIFY_QUIC_SUCCESS(
             QuicTlsSecConfigCreate(
                 &CredConfig, &SecConfig, OnSecConfigCreateComplete));
@@ -122,7 +122,6 @@ private:
         _In_ uint32_t * BufferLength
         )
     {
-        QuicEventReset(ProcessCompleteEvent);
 
         auto Result =
             QuicTlsProcessData(
@@ -131,10 +130,7 @@ private:
                 Buffer,
                 BufferLength,
                 &State);
-        if (Result & QUIC_TLS_RESULT_PENDING) {
-            QuicEventWaitForever(ProcessCompleteEvent);
-            Result = QuicTlsProcessDataComplete(Ptr, BufferLength);
-        }
+
 
         if (Result & QUIC_TLS_RESULT_ERROR) {
             printf("Failed to process data!\n");
@@ -221,6 +217,19 @@ private:
     }
 };
 
+PacketWriter::PacketWriter(
+    _In_ uint32_t Version,
+    _In_z_ const char* Alpn,
+    _In_z_ const char* Sni
+    )
+{
+    QuicVersion = Version;
+    uint16_t BufferSize = sizeof(CryptoBuffer);
+    CryptoBufferLength = 0;
+    WriteInitialCryptoFrame(
+        Alpn, Sni, &CryptoBufferLength, BufferSize, CryptoBuffer);
+}
+
 void
 PacketWriter::WriteInitialCryptoFrame(
     _In_z_ const char* Alpn,
@@ -252,8 +261,6 @@ void
 PacketWriter::WriteClientInitialPacket(
     _In_ uint32_t PacketNumber,
     _In_ uint8_t CidLength,
-    _In_z_ const char* Alpn,
-    _In_z_ const char* Sni,
     _In_ uint16_t BufferLength,
     _Out_writes_to_(BufferLength, *PacketLength)
         uint8_t* Buffer,
@@ -270,7 +277,7 @@ PacketWriter::WriteClientInitialPacket(
     uint8_t PacketNumberLength;
     *PacketLength =
         QuicPacketEncodeLongHeaderV1(
-            QUIC_VERSION_LATEST,
+          	QuicVersion,
             QUIC_INITIAL,
             Cid,
             Cid,
@@ -282,13 +289,17 @@ PacketWriter::WriteClientInitialPacket(
             &PayloadLengthOffset,
             &PacketNumberLength);
 
-    *HeaderLength = *PacketLength;
-    WriteInitialCryptoFrame(Alpn, Sni, PacketLength, BufferLength, Buffer);
+    if (*PacketLength + CryptoBufferLength > BufferLength) {
+        printf("Crypto Too Big!\n");
+        exit(0);
+    }
 
-    uint16_t PayloadLength = *PacketLength - *HeaderLength;
     QuicVarIntEncode2Bytes(
-        PacketNumberLength + PayloadLength + QUIC_ENCRYPTION_OVERHEAD,
+        PacketNumberLength + CryptoBufferLength + QUIC_ENCRYPTION_OVERHEAD,
         Buffer + PayloadLengthOffset);
+    *HeaderLength = *PacketLength;
 
+    QuicCopyMemory(Buffer + *PacketLength, CryptoBuffer, CryptoBufferLength);
+    *PacketLength += CryptoBufferLength;	
     *PacketLength += QUIC_ENCRYPTION_OVERHEAD;
 }

@@ -48,10 +48,10 @@ QuicUserMain(
     if (KeyboardWait) {
         printf("Press enter to exit\n");
         getchar();
-        QuicEventSet(StopEvent);
+        QuicEventSet(StopEvent.Handle);
     }
 
-    Status = QuicMainStop(0);
+    Status = QuicMainStop();
 
     return Status;
 }

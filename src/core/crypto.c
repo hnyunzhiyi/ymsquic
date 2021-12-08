@@ -155,10 +155,10 @@ QuicCryptoInitialize(
 
     } else {
         QUIC_DBG_ASSERT(!QuicListIsEmpty(&Connection->DestCids));
-        QUIC_CID_QUIC_LIST_ENTRY* DestCid =
+        QUIC_CID_LIST_ENTRY* DestCid =
             QUIC_CONTAINING_RECORD(
                 Connection->DestCids.Flink,
-                QUIC_CID_QUIC_LIST_ENTRY,
+                QUIC_CID_LIST_ENTRY,
                 Link);
 
         HandshakeCid = DestCid->CID.Data;
@@ -315,13 +315,11 @@ Error:
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicCryptoReset(
-    _In_ QUIC_CRYPTO* Crypto,
-    _In_ BOOLEAN ResetTls
+    _In_ QUIC_CRYPTO* Crypto
     )
 {
-    QUIC_DBG_ASSERT(!QuicConnIsServer(QuicCryptoGetConnection(Crypto)));
-    QUIC_TEL_ASSERT(!Crypto->TlsDataPending);
-    QUIC_TEL_ASSERT(!Crypto->TlsCallPending);
+
+    QUIC_DBG_ASSERT(QuicConnIsClient(QuicCryptoGetConnection(Crypto)));
     QUIC_TEL_ASSERT(Crypto->RecvTotalConsumed == 0);
 
     Crypto->MaxSentLength = 0;
@@ -331,21 +329,13 @@ QuicCryptoReset(
     Crypto->RecoveryEndOffset = 0;
     Crypto->InRecovery = FALSE;
 
-    if (ResetTls) {
-        Crypto->TlsState.BufferLength = 0;
-        Crypto->TlsState.BufferTotalLength = 0;
-
-        QuicTlsReset(Crypto->TLS);
-        QuicCryptoProcessData(Crypto, TRUE);
-
-    } else {
-        QuicSendSetSendFlag(
-            &QuicCryptoGetConnection(Crypto)->Send,
-            QUIC_CONN_SEND_FLAG_CRYPTO);
-    }
+    QuicSendSetSendFlag(
+        &QuicCryptoGetConnection(Crypto)->Send,
+        QUIC_CONN_SEND_FLAG_CRYPTO);
 
     QuicCryptoValidate(Crypto);
 }
+
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
@@ -1372,7 +1362,8 @@ QuicCryptoProcessTlsCompletion(
         }
         Connection->Stats.ResumptionSucceeded = Crypto->TlsState.SessionResumed;
 
-        QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_PMTUD);
+        //QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_PMTUD);
+        QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_DPLPMTUD);
 
         if (QuicConnIsServer(Connection) &&
             Crypto->TlsState.BufferOffset1Rtt != 0 &&
@@ -2077,6 +2068,8 @@ QuicCryptoDecodeClientTicket(
     *ServerTicket = NULL;
     *ServerTicketLength = 0;
     *QuicVersion = 0;
+
+printf("---------------------5:::::QuicCryptoDecodeClientTicket\n");
 
     if (!QuicVarIntDecode(ClientTicketLength, ClientTicket, &Offset, &TicketVersion)) {
         QuicTraceLogError(

@@ -334,7 +334,7 @@ QuicRegistrationAcceptConnection(
     return !QuicWorkerIsOverloaded(&Registration->WorkerPool->Workers[Index]);
 }
 
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(DISPATCH_LEVEL)
 void
 QuicRegistrationQueueNewConnection(
     _In_ QUIC_REGISTRATION* Registration,
@@ -363,10 +363,8 @@ QuicRegistrationParamSet(
         const void* Buffer
     )
 {
-    QUIC_STATUS Status;
 
-    switch (Param) {
-    case QUIC_PARAM_REGISTRATION_CID_PREFIX:
+    if (Param == QUIC_PARAM_REGISTRATION_CID_PREFIX) {
 
         if (BufferLength == 0) {
             if (Registration->CidPrefix != NULL) {
@@ -374,20 +372,17 @@ QuicRegistrationParamSet(
                 Registration->CidPrefix = NULL;
             }
             Registration->CidPrefixLength = 0;
-            Status = QUIC_STATUS_SUCCESS;
-            break;
+            return QUIC_STATUS_SUCCESS;
         }
 
         if (BufferLength > MSQUIC_CID_MAX_APP_PREFIX) {
-            Status = QUIC_STATUS_INVALID_PARAMETER;
-            break;
+            return QUIC_STATUS_INVALID_PARAMETER;
         }
 
         if (BufferLength > Registration->CidPrefixLength) {
             uint8_t* NewCidPrefix = QUIC_ALLOC_NONPAGED(BufferLength);
             if (NewCidPrefix == NULL) {
-                Status = QUIC_STATUS_OUT_OF_MEMORY;
-                break;
+                return QUIC_STATUS_OUT_OF_MEMORY;
             }
             QUIC_DBG_ASSERT(Registration->CidPrefix != NULL);
             QUIC_FREE(Registration->CidPrefix);
@@ -397,15 +392,9 @@ QuicRegistrationParamSet(
         Registration->CidPrefixLength = (uint8_t)BufferLength;
         memcpy(Registration->CidPrefix, Buffer, BufferLength);
 
-        Status = QUIC_STATUS_SUCCESS;
-        break;
-
-    default:
-        Status = QUIC_STATUS_INVALID_PARAMETER;
-        break;
+        return QUIC_STATUS_SUCCESS;
     }
-
-    return Status;
+    return QUIC_STATUS_INVALID_PARAMETER;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -418,21 +407,17 @@ QuicRegistrationParamGet(
         void* Buffer
     )
 {
-    QUIC_STATUS Status;
-
-    switch (Param) {
-    case QUIC_PARAM_REGISTRATION_CID_PREFIX:
+    
+    if (Param == QUIC_PARAM_REGISTRATION_CID_PREFIX) {
 
         if (*BufferLength < Registration->CidPrefixLength) {
             *BufferLength = Registration->CidPrefixLength;
-            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
-            break;
+            return QUIC_STATUS_BUFFER_TOO_SMALL;
         }
 
         if (Registration->CidPrefixLength > 0) {
             if (Buffer == NULL) {
-                Status = QUIC_STATUS_INVALID_PARAMETER;
-                break;
+                return QUIC_STATUS_INVALID_PARAMETER;
             }
 
             *BufferLength = Registration->CidPrefixLength;
@@ -442,13 +427,9 @@ QuicRegistrationParamGet(
             *BufferLength = 0;
         }
 
-        Status = QUIC_STATUS_SUCCESS;
-        break;
+       	return QUIC_STATUS_SUCCESS;
+  	}
 
-    default:
-        Status = QUIC_STATUS_INVALID_PARAMETER;
-        break;
-    }
+    return QUIC_STATUS_INVALID_PARAMETER;
 
-    return Status;
 }

@@ -1058,8 +1058,9 @@ QuicTlsReset(
             TlsContext->Ssl,
             Config->LocalTPBuffer,
             Config->LocalTPLength) != 1) {
-        QuicTraceLogStreamVerbose(
-            "LibraryError: [ lib] ERROR, %s.",
+        QuicTraceEvent(
+            LibraryError,
+            "[ lib] ERROR, %s.",
             "SSL_set_quic_transport_params failed");
         Status = QUIC_STATUS_TLS_ERROR;
         goto Exit;

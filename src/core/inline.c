@@ -17,7 +17,7 @@ Abstract:
 
 #include "precomp.h"
 
-QUIC_CID_QUIC_LIST_ENTRY*
+QUIC_CID_LIST_ENTRY*
 QuicCidNewDestination(
     _In_ uint8_t Length,
     _In_reads_(Length)
@@ -48,13 +48,8 @@ QuicCidNewRandomSource(
         const void* Prefix
     );
 
-QUIC_CID_QUIC_LIST_ENTRY*
+QUIC_CID_LIST_ENTRY*
 QuicCidNewRandomDestination(
-    );
-
-uint8_t
-QuicCidDecodeLength(
-    _In_ uint8_t Length
     );
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -94,6 +89,11 @@ QuicConnIsClosed(
 
 BOOLEAN
 QuicConnIsServer(
+    _In_ const QUIC_CONNECTION * const Connection
+    );
+
+BOOLEAN
+QuicConnIsClient(
     _In_ const QUIC_CONNECTION * const Connection
     );
 
@@ -177,6 +177,12 @@ QuicPerfCounterAdd(
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 void
+QuicPerfCounterTrySnapShot(
+    _In_ uint64_t TimeNow
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
 QuicStreamAddRef(
     _In_ QUIC_STREAM* Stream,
     _In_ QUIC_STREAM_REF Ref
@@ -187,6 +193,18 @@ BOOLEAN
 QuicStreamRelease(
     _In_ QUIC_STREAM* Stream,
     _In_ QUIC_STREAM_REF Ref
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicStreamSentMetadataDecrement(
+    _In_ QUIC_STREAM* Stream
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicStreamSentMetadataIncrement(
+    _In_ QUIC_STREAM* Stream
     );
 
 QUIC_ENCRYPT_LEVEL
@@ -485,13 +503,6 @@ QuicPathDecrementAllowance(
     _In_ uint32_t Amount
     );
 
-void
-QuicPktNumDecode(
-    _In_ uint8_t PacketNumberLength,
-    _In_reads_bytes_(PacketNumberLength)
-        const uint8_t* Buffer,
-    _Out_ uint64_t* PacketNumber
-    );
 
 uint64_t
 QuicPktNumDecompress(
@@ -517,13 +528,6 @@ int
 QuicRangeCompare(
     const QUIC_RANGE_SEARCH_KEY* Key,
     const QUIC_SUBRANGE* Sub
-    );
-
-uint8_t*
-QuicVarIntEncode2Bytes(
-    _In_ QUIC_VAR_INT Value,
-    _Out_writes_bytes_(sizeof(uint16_t))
-        uint8_t* Buffer
     );
 
 uint64_t
@@ -638,7 +642,7 @@ QuicConnGetSourceCidFromBuf(
         const uint8_t* CidBuffer
     );
 
-QUIC_CID_QUIC_LIST_ENTRY*
+QUIC_CID_LIST_ENTRY*
 QuicConnGetDestCidFromSeq(
     _In_ QUIC_CONNECTION* Connection,
     _In_ QUIC_VAR_INT SequenceNumber,
@@ -663,4 +667,22 @@ QuicConfigurationAddRef(
 void
 QuicConfigurationRelease(
     _In_ QUIC_CONFIGURATION* Configuration
+    );
+
+BOOLEAN
+QuicErrorIsProtocolError(
+    _In_ QUIC_VAR_INT ErrorCode
+    );
+
+uint16_t
+QuicConnGetMaxMtuForPath(
+    _In_ QUIC_CONNECTION* Connection,
+    _In_ QUIC_PATH* Path
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicMtuDiscoveryCheckSearchCompleteTimeout(
+    _In_ QUIC_CONNECTION* Connection,
+    _In_ uint64_t TimeNow
     );

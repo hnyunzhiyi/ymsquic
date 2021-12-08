@@ -9,6 +9,10 @@
 // A worker thread for draining queued operations on a connection.
 //
 typedef struct QUIC_CACHEALIGN QUIC_WORKER {
+    //
+    //An event to kick the thread.
+    //      
+    QUIC_EVENT Ready;
 
     //
     // TRUE if the worker is currently running.
@@ -39,11 +43,6 @@ typedef struct QUIC_CACHEALIGN QUIC_WORKER {
     // Timers for the worker's connections.
     //
     QUIC_TIMER_WHEEL TimerWheel;
-
-    //
-    // An event to kick the thread.
-    //
-    QUIC_EVENT Ready;
 
     //
     // A thread for draining operations from queued connections.

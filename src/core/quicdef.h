@@ -33,6 +33,14 @@ typedef struct QUIC_PATH QUIC_PATH;
 #define QUIC_MIN_INITIAL_PACKET_LENGTH          1200
 
 //
+// The minimum UDP payload size across all supported versions. Used to decide
+// on whether to send a version negotiation packet in response to an unsupported
+// QUIC version.
+//
+#define QUIC_MIN_UDP_PAYLOAD_LENGTH_FOR_VN      QUIC_MIN_INITIAL_PACKET_LENGTH
+
+
+//
 // The initial congestion window.
 //
 #define QUIC_INITIAL_WINDOW_PACKETS             10
@@ -153,7 +161,7 @@ typedef struct QUIC_PATH QUIC_PATH;
 // FLUSH_SEND operation. The actual number will generally exceed this value up
 // to the limit of the current USO buffer being filled.
 //
-#define QUIC_MAX_DATAGRAMS_PER_SEND             245
+#define QUIC_MAX_DATAGRAMS_PER_SEND             40
 
 //
 // The number of packets we write for a single stream before going to the next
@@ -171,11 +179,14 @@ typedef struct QUIC_PATH QUIC_PATH;
 //
 #define QUIC_MAX_CRYPTO_BATCH_COUNT             8
 
+#ifdef  _KERNEL_MODE
 //
-// The maximum number of received packets that may be queued on a single
-// connection. When this limit is reached, any additional packets are dropped.
+// Kernel modes receive path is slightly different, so allow larger queue sizes.
 //
-#define QUIC_MAX_RECEIVE_QUEUE_COUNT            0x1000      // 4096
+#define QUIC_MAX_RECEIVE_QUEUE_COUNT            1024
+#else
+#define QUIC_MAX_RECEIVE_QUEUE_COUNT            180
+#endif
 
 //
 // The maximum number of pending datagrams we will hold on to, per connection,
@@ -223,10 +234,22 @@ QUIC_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_ACK_PACKETS), L"Must be power 
 QUIC_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_DECODE_ACKS), L"Must be power of two");
 
 //
-// Path MTU discovery will always start with/initialize with the smallest
-// allowable MTU for QUIC (1280 bytes).
+// Minimum MTU allowed to be configured. Must be able to fit a
+// QUIC_MIN_INITIAL_PACKET_LENGTH in an IPv6 datagram.
 //
-#define QUIC_DEFAULT_PATH_MTU                   QUIC_MIN_MTU
+
+#define QUIC_DPLPMUTD_MIN_MTU                   (QUIC_MIN_INITIAL_PACKET_LENGTH + \
+                                                QUIC_MIN_IPV6_HEADER_SIZE     + \
+                                                QUIC_UDP_HEADER_SIZE)
+
+
+#define QUIC_DPLPMUTD_DEFAULT_MIN_MTU           QUIC_DPLPMUTD_MIN_MTU
+
+//
+// The maximum IP MTU DPLPMTUD will use by default.
+//
+#define QUIC_DPLPMUTD_DEFAULT_MAX_MTU           1500
+
 
 //
 // The maximum time an app callback can take before we log a warning.
@@ -291,11 +314,6 @@ QUIC_STATIC_ASSERT(
 //
 #define QUIC_DEFAULT_IDEAL_SEND_BUFFER_SIZE     0x20000 // 131072
 
-//
-// Defines the theshold of the current ideal send buffer that bytes in flight
-// must reach before we will double the ideal send buffer.
-//
-#define QUIC_IDEAL_SEND_BUFFER_THRESHOLD(ISB)   ((ISB) / 4)
 
 //
 // The max ideal send buffer size (in bytes). Note that this is not
@@ -341,12 +359,7 @@ QUIC_STATIC_ASSERT(
 //
 // The number of milliseconds between pacing chunks.
 //
-#define QUIC_SEND_PACING_INTERVAL               15
-
-//
-// The minimum number of packets to send per pacing chunk.
-//
-#define QUIC_SEND_PACING_MIN_CHUNK              4u
+#define QUIC_SEND_PACING_INTERVAL               1
 
 //
 // The maximum number of bytes to send in a given key phase
@@ -363,12 +376,6 @@ QUIC_STATIC_ASSERT(
 // The scaling factor used locally for AckDelay field in the ACK_FRAME.
 //
 #define QUIC_ACK_DELAY_EXPONENT                 8
-//
-// The length of the client initial packets sent. Instead of the required min of
-// 1200 we send the full 1280 to give the server more credit to overcome
-// amplification protection.
-//
-#define QUIC_INITIAL_PACKET_LENGTH              1280
 
 //
 // The lifetime of a QUIC stateless retry token encryption key.
@@ -416,11 +423,37 @@ QUIC_STATIC_ASSERT(
 #define QUIC_TLS_RESUMPTION_CLIENT_TICKET_VERSION      1
 
 //
+// By default the Version Negotiation Extension is disabled.
+//
+#define QUIC_DEFAULT_VERSION_NEGOTIATION_EXT_ENABLED    FALSE
+
+//
 // The AEAD Integrity limit for maximum failed decryption packets over the
 // lifetime of a connection. Set to the lowest limit, which is for
 // AEAD_AES_128_CCM at 2^23.5 (rounded down)
 //
 #define QUIC_AEAD_INTEGRITY_LIMIT               11863283
+
+//
+// Maximum length, in bytes, for a connection_close reason phrase.
+//
+#define QUIC_MAX_CONN_CLOSE_REASON_LENGTH           512
+
+//
+// The maximum number of probe packets sent before considering an MTU too large.
+//
+#define QUIC_DPLPMTUD_MAX_PROBES                    3
+
+//
+// The timeout time in microseconds for the DPLPMTUD wait time.
+//
+#define QUIC_DPLPMTUD_RAISE_TIMER_TIMEOUT           S_TO_US(600)
+
+//
+// The amount of bytes to increase our PLMTU each probe
+//
+#define QUIC_DPLPMTUD_INCREMENT                     80
+
 
 /*************************************************************
                   PERSISTENT SETTINGS
@@ -433,6 +466,8 @@ QUIC_STATIC_ASSERT(
 #define QUIC_SETTING_LOAD_BALANCING_MODE        "LoadBalancingMode"
 #define QUIC_SETTING_MAX_WORKER_QUEUE_DELAY     "MaxWorkerQueueDelayMs"
 #define QUIC_SETTING_MAX_STATELESS_OPERATIONS   "MaxStatelessOperations"
+#define QUIC_SETTING_MAX_BINDING_STATELESS_OPERATIONS "MaxBindingStatelessOperations"
+#define QUIC_SETTING_STATELESS_OPERATION_EXPIRATION "StatelessOperationExpirationMs"
 #define QUIC_SETTING_MAX_OPERATIONS_PER_DRAIN   "MaxOperationsPerDrain"
 
 #define QUIC_SETTING_SEND_BUFFERING_DEFAULT     "SendBufferingDefault"
@@ -459,3 +494,12 @@ QUIC_STATIC_ASSERT(
 #define QUIC_SETTING_MAX_BYTES_PER_KEY_PHASE    "MaxBytesPerKey"
 
 #define QUIC_SETTING_SERVER_RESUMPTION_LEVEL    "ResumptionLevel"
+#define QUIC_SETTING_VERSION_NEGOTIATION_EXT_ENABLE "VersionNegotiationExtEnabled"
+
+#define QUIC_SETTING_MINIMUM_MTU                 "MinimumMtu"
+#define QUIC_SETTING_MAXIMUM_MTU                 "MaximumMtu"
+#define QUIC_SETTING_MTU_SEARCH_COMPLETE_TIMEOUT "MtuDiscoverySearchCompleteTimeoutUs"
+#define QUIC_SETTING_MTU_MISSING_PROBE_COUNT     "MtuDiscoveryMissingProbeCount"
+
+
+

@@ -26,7 +26,8 @@ main(
         return 0;
     }
 
-    const char* Target = "quic.westus.cloudapp.azure.com";
+    //const char* Target = "quic.westus.cloudapp.azure.com";
+    const char* Target = "192.169.27.45";
     const char* LocalAddressArg = "*";
     bool Unsecure = false;
     QUIC_ADDR LocalAddress;

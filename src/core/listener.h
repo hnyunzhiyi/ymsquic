@@ -67,6 +67,7 @@ typedef struct QUIC_LISTENER {
     uint16_t AlpnListLength;
     _Field_size_(AlpnListLength)
     uint8_t* AlpnList;
+	Fd_Attribute* Attribute;
 
 } QUIC_LISTENER;
 

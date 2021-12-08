@@ -1,10 +1,12 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+set(SOURCES hashtable.c pcp.c)
+
 if("${QUIC_PLATFORM}" STREQUAL "windows")
     set(SOURCES
+		 ${SOURCES}
         datapath_winuser.c
-        hashtable.c
         platform_winuser.c
         storage_winuser.c
         toeplitz.c
@@ -12,8 +14,8 @@ if("${QUIC_PLATFORM}" STREQUAL "windows")
 else()
     if(QUIC_PLATFORM STREQUAL "linux")
         set(SOURCES
+			${SOURCES}
             datapath_linux.c
-            hashtable.c
             inline.c
             platform_linux.c
             storage_linux.c
@@ -21,8 +23,8 @@ else()
         )
     else()
         set(SOURCES
+			${SOURCES}
             datapath_darwin.c
-            hashtable.c
             inline.c
             platform_darwin.c
             storage_darwin.c

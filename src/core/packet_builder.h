@@ -28,7 +28,7 @@ typedef struct QUIC_PACKET_BUILDER {
     //
     // Represents a set of UDP datagrams.
     //
-    QUIC_DATAPATH_SEND_CONTEXT* SendContext;
+    QUIC_SEND_DATA* SendData;
 
     //
     // Represents a single UDP payload. Can contain multiple coalesced QUIC
@@ -206,7 +206,7 @@ QuicPacketBuilderPrepareForStreamFrames(
 // Finishes up the current packet so it can be sent.
 //
 _IRQL_requires_max_(PASSIVE_LEVEL)
-void
+BOOLEAN
 QuicPacketBuilderFinalize(
     _Inout_ QUIC_PACKET_BUILDER* Builder,
     _In_ BOOLEAN FlushBatchedDatagrams
@@ -258,6 +258,6 @@ QuicPacketBuilderAddStreamFrame(
     )
 {
     Builder->Metadata->Frames[Builder->Metadata->FrameCount].MAX_STREAM_DATA.Stream = Stream;
-    QuicStreamAddRef(Stream, QUIC_STREAM_REF_SEND_PACKET);
+    QuicStreamSentMetadataIncrement(Stream);
     return QuicPacketBuilderAddFrame(Builder, FrameType, TRUE);
 }

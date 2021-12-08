@@ -167,7 +167,7 @@ void
 QuicLookupRemoveLocalCid(
     _In_ QUIC_LOOKUP* Lookup,
     _In_ QUIC_CID_HASH_ENTRY* SourceCid,
-    _In_ QUIC_SINGLE_LIST_ENTRY** Entry
+    _In_ QUIC_SLIST_ENTRY** Entry
     );
 
 //

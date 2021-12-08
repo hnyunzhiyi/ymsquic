@@ -42,6 +42,7 @@ QuicStatusToString(
 {
     switch (Status) {
     case QUIC_STATUS_SUCCESS:                   return "SUCCESS";
+    case QUIC_STATUS_PENDING:                   return "PENDING";
     case QUIC_STATUS_OUT_OF_MEMORY:             return "OUT_OF_MEMORY";
     case QUIC_STATUS_INVALID_PARAMETER:         return "INVALID_PARAMETER";
     case QUIC_STATUS_INVALID_STATE:             return "INVALID_STATE";
@@ -58,7 +59,9 @@ QuicStatusToString(
     case QUIC_STATUS_CONNECTION_REFUSED:        return "CONNECTION_REFUSED";
     case QUIC_STATUS_PROTOCOL_ERROR:            return "PROTOCOL_ERROR";
     case QUIC_STATUS_VER_NEG_ERROR:             return "VER_NEG_ERROR";
-    case QUIC_STATUS_PENDING:                   return "PENDING";
+    case QUIC_STATUS_USER_CANCELED:             return "USER_CANCELED";
+    case QUIC_STATUS_ALPN_NEG_FAILURE:          return "ALPN_NEG_FAILURE";
+    case QUIC_STATUS_STREAM_LIMIT_REACHED:      return "STREAM_LIMIT_REACHED";    
     }
 
     return "UNKNOWN";
@@ -249,6 +252,22 @@ DecodeHexBuffer(
     return HexBufferLen;
 }
 
+inline
+void
+EncodeHexBuffer(
+    _In_reads_(BufferLen) uint8_t* Buffer,
+    _In_ uint8_t BufferLen,
+    _Out_writes_bytes_(2*BufferLen) char* HexString
+    )
+{
+    #define HEX_TO_CHAR(x) ((x) > 9 ? ('a' + ((x) - 10)) : '0' + (x))
+    for (uint8_t i = 0; i < BufferLen; i++) {
+        HexString[i*2]     = HEX_TO_CHAR(Buffer[i] >> 4);
+        HexString[i*2 + 1] = HEX_TO_CHAR(Buffer[i] & 0xf);
+    }
+}
+
+
 #if defined(__cplusplus)
 
 //
@@ -272,13 +291,52 @@ IsValue(
     _In_z_ const char* toTestAgainst
     )
 {
-    return _strnicmp(name, toTestAgainst, min(strlen(name), strlen(toTestAgainst))) == 0;
+    return _strnicmp(name, toTestAgainst, QUIC_MIN(strlen(name), strlen(toTestAgainst))) == 0;
+}
+
+inline
+bool
+GetFlag(
+    _In_ int argc,
+    _In_reads_(argc) _Null_terminated_ char* argv[],
+    _In_z_ const char* name
+    )
+{
+    const size_t nameLen = strlen(name);
+    for (int i = 0; i < argc; i++) {
+        if (_strnicmp(argv[i] + 1, name, nameLen) == 0
+            && strlen(argv[i]) == nameLen + 1) {
+            return true;
+        }
+    }
+    return false;
 }
 
 //
 // Helper function that searches the list of args for a given
 // parameter name, insensitive to case.
 //
+#if 0
+inline
+_Ret_maybenull_ _Null_terminated_ const char*
+GetValue(
+    _In_ int argc,
+    _In_reads_(argc) _Null_terminated_ char* argv[],
+    _In_z_ const char* name
+    )
+{
+    const size_t nameLen = strlen(name);
+    for (int i = 0; i < argc; i++) {
+        if (_strnicmp(argv[i] + 1, name, nameLen) == 0
+            && strlen(argv[i]) > 1 + nameLen + 1
+            && *(argv[i] + 1 + nameLen) == ':') {			
+            return argv[i] + 1 + nameLen + 1;
+        }
+    }
+    return nullptr;
+}
+#endif 
+
 inline
 _Ret_maybenull_ _Null_terminated_ const char*
 GetValue(
@@ -295,6 +353,9 @@ GetValue(
     }
     return nullptr;
 }
+
+
+
 
 inline
 _Success_(return != false)
@@ -344,6 +405,7 @@ TryGetValue(
     return true;
 }
 
+
 inline
 _Success_(return != false)
 bool
@@ -356,7 +418,28 @@ TryGetValue(
 {
     auto value = GetValue(argc, argv, name);
     if (!value) return false;
-    *pValue = (uint32_t)atoi(value);
+    char* End;
+#ifdef _WIN32
+    *pValue = _strtoui64(value, &End, 10);
+#else
+    *pValue = strtoull(value, &End, 10);
+#endif
+    return true;
+}
+
+inline
+_Success_(return != false)
+bool
+TryGetValue(
+    _In_ int argc,
+    _In_reads_(argc) _Null_terminated_ char* argv[],
+    _In_z_ const char* name,
+    _Out_ int32_t* pValue
+    )
+{
+    auto value = GetValue(argc, argv, name);
+    if (!value) return false;
+    *pValue = (int32_t)atoi(value);
     return true;
 }
 
@@ -381,6 +464,9 @@ TryGetValue(
     return true;
 }
 
+
+
+
 inline
 _Success_(return != false)
 HQUIC
@@ -404,6 +490,7 @@ GetServerConfigurationFromArgs(
 
     const char* Cert;
     const char* KeyFile;
+
 
     if (((Cert = GetValue(argc, argv, "thumbprint")) != nullptr) ||
         ((Cert = GetValue(argc, argv, "cert_hash")) != nullptr) ||
@@ -436,6 +523,7 @@ GetServerConfigurationFromArgs(
 
 #ifdef QUIC_TEST_APIS
     } else if (GetValue(argc, argv, "selfsign")) {
+		Config = NULL;
         Config = QuicPlatGetSelfSignedCert(QUIC_SELF_SIGN_CERT_USER);
         if (!Config) {
             return nullptr;
@@ -493,6 +581,103 @@ FreeServerConfiguration(
     }
 #endif
     MsQuic->ConfigurationClose(Configuration);
+}
+
+inline
+void
+WriteSslKeyLogFile(
+    _In_z_ const char* FileName,
+    _In_ QUIC_TLS_SECRETS& TlsSecrets
+    )
+{
+    FILE* File = nullptr;
+#ifdef _WIN32
+    if (fopen_s(&File, FileName, "ab")) {
+        printf("Failed to open sslkeylogfile %s\n", FileName);
+        return;
+    }
+#else
+    File = fopen(FileName, "ab");
+#endif
+
+    if (File == nullptr) {
+        printf("Failed to open sslkeylogfile %s\n", FileName);
+        return;
+    }
+    if (fseek(File, 0, SEEK_END) == 0 && ftell(File) == 0) {
+        fprintf(File, "# TLS 1.3 secrets log file, generated by quicinterop\n");
+    }
+    char ClientRandomBuffer[(2 * sizeof(QUIC_TLS_SECRETS::ClientRandom)) + 1] = {0};
+    char TempHexBuffer[(2 * QUIC_TLS_SECRETS_MAX_SECRET_LEN) + 1] = {0};
+    if (TlsSecrets.IsSet.ClientRandom) {
+        EncodeHexBuffer(
+            TlsSecrets.ClientRandom,
+            (uint8_t)sizeof(TlsSecrets.ClientRandom),
+            ClientRandomBuffer);
+    }
+
+    if (TlsSecrets.IsSet.ClientEarlyTrafficSecret) {
+        EncodeHexBuffer(
+            TlsSecrets.ClientEarlyTrafficSecret,
+            TlsSecrets.SecretLength,
+            TempHexBuffer);
+        fprintf(
+            File,
+            "CLIENT_EARLY_TRAFFIC_SECRET %s %s\n",
+            ClientRandomBuffer,
+            TempHexBuffer);
+    }
+
+    if (TlsSecrets.IsSet.ClientHandshakeTrafficSecret) {
+        EncodeHexBuffer(
+            TlsSecrets.ClientHandshakeTrafficSecret,
+            TlsSecrets.SecretLength,
+            TempHexBuffer);
+        fprintf(
+            File,
+            "CLIENT_HANDSHAKE_TRAFFIC_SECRET %s %s\n",
+            ClientRandomBuffer,
+            TempHexBuffer);
+    }
+
+    if (TlsSecrets.IsSet.ServerHandshakeTrafficSecret) {
+        EncodeHexBuffer(
+            TlsSecrets.ServerHandshakeTrafficSecret,
+            TlsSecrets.SecretLength,
+            TempHexBuffer);
+        fprintf(
+            File,
+            "SERVER_HANDSHAKE_TRAFFIC_SECRET %s %s\n",
+            ClientRandomBuffer,
+            TempHexBuffer);
+    }
+
+    if (TlsSecrets.IsSet.ClientTrafficSecret0) {
+        EncodeHexBuffer(
+            TlsSecrets.ClientTrafficSecret0,
+            TlsSecrets.SecretLength,
+            TempHexBuffer);
+        fprintf(
+            File,
+            "CLIENT_TRAFFIC_SECRET_0 %s %s\n",
+            ClientRandomBuffer,
+            TempHexBuffer);
+    }
+
+    if (TlsSecrets.IsSet.ServerTrafficSecret0) {
+        EncodeHexBuffer(
+            TlsSecrets.ServerTrafficSecret0,
+            TlsSecrets.SecretLength,
+            TempHexBuffer);
+        fprintf(
+            File,
+            "SERVER_TRAFFIC_SECRET_0 %s %s\n",
+            ClientRandomBuffer,
+            TempHexBuffer);
+    }
+
+    fflush(File);
+    fclose(File);
 }
 
 #endif // defined(__cplusplus)

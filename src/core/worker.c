@@ -57,11 +57,11 @@ QuicWorkerInitialize(
     QuicListInitializeHead(&Worker->Operations);
     QuicPoolInitialize(FALSE, sizeof(QUIC_STREAM), QUIC_POOL_STREAM, &Worker->StreamPool);
     QuicPoolInitialize(FALSE, QUIC_DEFAULT_STREAM_RECV_BUFFER_SIZE, QUIC_POOL_SBUF, &Worker->DefaultReceiveBufferPool);
-    QuicPoolInitialize(FALSE, sizeof(QUIC_SEND_REQUEST), QUIC_POOL_GENERIC, &Worker->SendRequestPool);
+    QuicPoolInitialize(FALSE, sizeof(QUIC_SEND_REQUEST), QUIC_POOL_SEND_REQUEST, &Worker->SendRequestPool);
     QuicSentPacketPoolInitialize(&Worker->SentPacketPool);
-    QuicPoolInitialize(FALSE, sizeof(QUIC_API_CONTEXT), QUIC_POOL_GENERIC, &Worker->ApiContextPool);
-    QuicPoolInitialize(FALSE, sizeof(QUIC_STATELESS_CONTEXT), QUIC_POOL_GENERIC, &Worker->StatelessContextPool);
-    QuicPoolInitialize(FALSE, sizeof(QUIC_OPERATION), QUIC_POOL_GENERIC, &Worker->OperPool);
+    QuicPoolInitialize(FALSE, sizeof(QUIC_API_CONTEXT), QUIC_POOL_API_CTX, &Worker->ApiContextPool);
+    QuicPoolInitialize(FALSE, sizeof(QUIC_STATELESS_CONTEXT), QUIC_POOL_STATELESS_CTX, &Worker->StatelessContextPool);
+    QuicPoolInitialize(FALSE, sizeof(QUIC_OPERATION), QUIC_POOL_OPER, &Worker->OperPool);
 
     Status = QuicTimerWheelInitialize(&Worker->TimerWheel);
     if (QUIC_FAILED(Status)) {
@@ -262,7 +262,7 @@ QuicWorkerQueueOperation(
     if (Operation != NULL) {
         const QUIC_BINDING* Binding = Operation->STATELESS.Context->Binding;
         const QUIC_RECV_PACKET* Packet =
-            QuicDataPathRecvDatagramToRecvPacket(
+            QuicDataPathRecvDataToRecvPacket(
                 Operation->STATELESS.Context->Datagram);
         QuicPacketLogDrop(Binding, Packet, "Worker operation limit reached");
         QuicOperationFree(Worker, Operation);
@@ -358,7 +358,7 @@ QuicWorkerGetNextOperation(
 
     if (Worker->Enabled) {
         QuicDispatchLockAcquire(&Worker->Lock);
-
+	
         if (Worker->OperationCount == 0) {
             Operation = NULL;
         } else {
@@ -544,6 +544,7 @@ QUIC_THREAD_CALLBACK(QuicWorkerThread, Context)
     //
 
     while (Worker->Enabled) {
+	
 
         //
         // For every loop of the worker thread, in an attempt to balance things,
@@ -566,13 +567,21 @@ QUIC_THREAD_CALLBACK(QuicWorkerThread, Context)
             QuicPerfCounterIncrement(QUIC_PERF_COUNTER_WORK_OPER_COMPLETED);
         }
 
+        uint64_t TimeNow = QuicTimeUs64();		
+        //
+        //Opportunistically try to snap-shot performance counters and do
+        //some validation.
+        //                      
+        QuicPerfCounterTrySnapShot(TimeNow);
+		//
+
         //
         // Get the delay until the next timer expires. Check to see if any
         // timers have expired; if so, process them. If not, only wait for the
         // next timer if we have run out of connections and stateless operations
         // to process.
         //
-        uint64_t Delay = QuicTimerWheelGetWaitTime(&Worker->TimerWheel);
+        uint64_t Delay = QuicTimerWheelGetWaitTime(&Worker->TimerWheel, TimeNow);
 
         if (Delay == 0) {
             //

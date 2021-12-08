@@ -43,6 +43,10 @@ typedef struct QUIC_PATH {
     BOOLEAN IsPeerValidated : 1;
 
     //
+    //Indicates the minimum MTU has been validated.
+    //      
+	BOOLEAN IsMinMtuValidated : 1;
+    //
     // Current value to encode in the short header spin bit field.
     //
     BOOLEAN SpinBit : 1;
@@ -68,6 +72,16 @@ typedef struct QUIC_PATH {
     uint16_t Mtu;
 
     //
+    //The local socket MTU.
+    //        
+    uint16_t LocalMtu;
+
+    //
+    //MTU Discovery logic.
+    //       
+    QUIC_MTU_DISCOVERY MtuDiscovery;
+
+    //
     // The binding used for sending/receiving UDP packets.
     //
     QUIC_BINDING* Binding;
@@ -85,7 +99,7 @@ typedef struct QUIC_PATH {
     //
     // The destination CID used for sending on this path.
     //
-    QUIC_CID_QUIC_LIST_ENTRY* DestCid;
+    QUIC_CID_LIST_ENTRY* DestCid;
 
     //
     // Used on the server side until the client's IP address has been validated
@@ -120,6 +134,17 @@ typedef struct QUIC_PATH {
     uint32_t PathValidationStartTime;
 
 } QUIC_PATH;
+
+#if DEBUG
+#define QuicPathValidate(Path) \
+    QUIC_DBG_ASSERT( \
+        (Path)->DestCid == NULL || \
+        (Path)->DestCid->CID.Length == 0 || \
+        ((Path)->DestCid->AssignedPath == (Path) && \
+         (Path)->DestCid->CID.UsedLocally))
+#else
+#define QuicPathValidate(Path) UNREFERENCED_PARAMETER(Path)
+#endif
 
 QUIC_STATIC_ASSERT(
     sizeof(QUIC_PATH) < 256,
@@ -197,10 +222,12 @@ QuicPathSetActive(
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 _Ret_maybenull_
+_Success_(return != NULL)
 QUIC_PATH*
 QuicConnGetPathByID(
     _In_ QUIC_CONNECTION* Connection,
-    _In_ uint8_t ID
+    _In_ uint8_t ID,
+    _Out_ uint8_t* Index
     );
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -208,5 +235,5 @@ _Ret_maybenull_
 QUIC_PATH*
 QuicConnGetPathForDatagram(
     _In_ QUIC_CONNECTION* Connection,
-    _In_ const QUIC_RECV_DATAGRAM* Datagram
+    _In_ const QUIC_RECV_DATA* Datagram
     );

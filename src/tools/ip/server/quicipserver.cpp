@@ -86,8 +86,6 @@ ServerSendIp(
     QuicAddrToString((QUIC_ADDR*)(SendBuffer->Buffer), &AddrStr);
     printf("server_message:Local IP: %s\n", AddrStr.Address);
 
-
-
     if (QUIC_FAILED(Status = MsQuic->StreamOpen(Connection, QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL, ServerStreamCallback, nullptr, &Stream))) {
         printf("StreamOpen failed, 0x%x!\n", Status);
         return;

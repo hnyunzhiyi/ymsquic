@@ -46,7 +46,7 @@ MsQuicConfigurationOpen(
     }
 
     if (Settings != NULL &&
-        SettingsSize < (uint32_t)FIELD_OFFSET(QUIC_SETTINGS, MaxBytesPerKey)) {
+        SettingsSize < (uint32_t)FIELD_OFFSET(QUIC_SETTINGS, DesiredVersionsList)) {
         Status = QUIC_STATUS_INVALID_PARAMETER;
         goto Error;
     }
@@ -130,6 +130,11 @@ MsQuicConfigurationOpen(
     }
 #endif
 
+#ifdef QUIC_OWNING_PROCESS
+    Configuration->OwningProcess = QuicProcessGetCurrentProcess();
+    QuicProcessAddRef(Configuration->OwningProcess);
+#endif
+
     if (Registration->AppNameLength != 0) {
         char SpecificAppKey[UINT8_MAX + sizeof(QUIC_SETTING_APP_KEY)] = QUIC_SETTING_APP_KEY;
         QuicCopyMemory(
@@ -152,10 +157,12 @@ MsQuicConfigurationOpen(
     }
 
     if (Settings != NULL && Settings->IsSetFlags != 0) {
-        QUIC_DBG_ASSERT(SettingsSize >= (uint32_t)FIELD_OFFSET(QUIC_SETTINGS, MaxBytesPerKey));
+        QUIC_DBG_ASSERT(SettingsSize >= (uint32_t)FIELD_OFFSET(QUIC_SETTINGS, DesiredVersionsList));
         if (!QuicSettingApply(
                 &Configuration->Settings,
                 TRUE,
+				TRUE,
+				TRUE,
                 SettingsSize,
                 Settings)) {
             Status = QUIC_STATUS_INVALID_PARAMETER;
@@ -218,10 +225,18 @@ QuicConfigurationUninitialize(
     QuicSiloRelease(Configuration->Silo);
 #endif
 
+#ifdef QUIC_OWNING_PROCESS
+    QuicProcessRelease(Configuration->OwningProcess);
+#endif
+
+    QuicSettingsCleanup(&Configuration->Settings);
+
     QuicRundownRelease(&Configuration->Registration->Rundown);
 
-    QuicTraceLogVerbose("ConfigurationDestroyed: [cnfg][%p] Destroyed", Configuration);
-    QUIC_FREE(Configuration);
+    QuicTraceLogInfo(
+        "[cnfg][%p] Destroyed",
+        Configuration);
+	QUIC_FREE(Configuration);
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -308,8 +323,8 @@ MsQuicConfigurationLoadCredential(
         if (!(CredConfig->Flags & QUIC_CREDENTIAL_FLAG_LOAD_ASYNCHRONOUS) ||
             QUIC_FAILED(Status)) {
             //
-            // Release ref for synchronous calls or asynchronous failures.
-            //
+            //Release ref for synchronous calls or asynchronous failures.
+            //                      
             QuicConfigurationRelease(Configuration);
         }
     }
@@ -368,34 +383,26 @@ QuicConfigurationParamGet(
         void* Buffer
     )
 {
-    QUIC_STATUS Status;
 
-    switch (Param) {
-    case QUIC_PARAM_CONFIGURATION_SETTINGS:
+    
+    if (Param == QUIC_PARAM_CONFIGURATION_SETTINGS) {
 
         if (*BufferLength < sizeof(QUIC_SETTINGS)) {
             *BufferLength = sizeof(QUIC_SETTINGS);
-            Status = QUIC_STATUS_BUFFER_TOO_SMALL; // TODO - Support partial
-            break;
+            return QUIC_STATUS_BUFFER_TOO_SMALL; // TODO - Support partial
         }
 
         if (Buffer == NULL) {
-            Status = QUIC_STATUS_INVALID_PARAMETER;
-            break;
+            return QUIC_STATUS_INVALID_PARAMETER;
         }
 
         *BufferLength = sizeof(QUIC_SETTINGS);
         QuicCopyMemory(Buffer, &Configuration->Settings, sizeof(QUIC_SETTINGS));
 
-        Status = QUIC_STATUS_SUCCESS;
-        break;
-
-    default:
-        Status = QUIC_STATUS_INVALID_PARAMETER;
-        break;
-    }
-
-    return Status;
+        return QUIC_STATUS_SUCCESS;
+	}
+    
+    return QUIC_STATUS_INVALID_PARAMETER;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -408,35 +415,51 @@ QuicConfigurationParamSet(
         const void* Buffer
     )
 {
-    QUIC_STATUS Status;
-
     switch (Param) {
-    case QUIC_PARAM_GLOBAL_SETTINGS:
+    case QUIC_PARAM_CONFIGURATION_SETTINGS:
 
-        if (BufferLength != sizeof(QUIC_SETTINGS)) {
-            Status = QUIC_STATUS_INVALID_PARAMETER; // TODO - Support partial
-            break;
+        if (Buffer == NULL ||
+            BufferLength != sizeof(QUIC_SETTINGS)) {
+            return QUIC_STATUS_INVALID_PARAMETER; // TODO - Support partial
         }
 
         QuicTraceLogInfo("ConfigurationSetSettings: [cnfg][%p] Setting new settings", Configuration);
         if (!QuicSettingApply(
                 &Configuration->Settings,
                 TRUE,
+				TRUE,
+				TRUE,
                 BufferLength,
                 (QUIC_SETTINGS*)Buffer)) {
-            Status = QUIC_STATUS_INVALID_PARAMETER;
-            break;
+            return QUIC_STATUS_INVALID_PARAMETER;
+	
         }
 
         QuicSettingsDumpNew(BufferLength, (QUIC_SETTINGS*)Buffer);
+        return QUIC_STATUS_SUCCESS;
 
-        Status = QUIC_STATUS_SUCCESS;
-        break;
+	#if 0
+    case QUIC_PARAM_CONFIGURATION_TICKET_KEYS:
 
-    default:
-        Status = QUIC_STATUS_INVALID_PARAMETER;
-        break;
+        if (Buffer == NULL ||
+            BufferLength < sizeof(QUIC_TICKET_KEY_CONFIG)) {
+            return QUIC_STATUS_INVALID_PARAMETER;
+        }
+
+        if (Configuration->SecurityConfig == NULL) {
+            return QUIC_STATUS_INVALID_STATE;
+        }
+
+        return
+            QuicTlsSecConfigSetTicketKeys(
+                Configuration->SecurityConfig,
+                (QUIC_TICKET_KEY_CONFIG*)Buffer,
+                (uint8_t)(BufferLength / sizeof(QUIC_TICKET_KEY_CONFIG)));
+	#endif 
+	default:
+
+		break;
     }
 
-    return Status;
+    return QUIC_STATUS_INVALID_PARAMETER;
 }

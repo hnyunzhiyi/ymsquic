@@ -17,7 +17,13 @@ Supported Environments:
 
 #pragma once
 
+#include <stddef.h>
+
 #define IS_POWER_OF_TWO(x) (((x) != 0) && (((x) & ((x) - 1)) == 0))
+
+
+#define QUIC_MAX(a,b) (((a) > (b)) ? (a) : (b))
+#define QUIC_MIN(a,b) (((a) < (b)) ? (a) : (b))
 
 //
 // Time unit conversion.
@@ -44,9 +50,10 @@ typedef struct QUIC_LIST_ENTRY {
     struct QUIC_LIST_ENTRY* Blink;
 } QUIC_LIST_ENTRY;
 
-typedef struct QUIC_SINGLE_LIST_ENTRY {
-    struct QUIC_SINGLE_LIST_ENTRY* Next;
-} QUIC_SINGLE_LIST_ENTRY;
+typedef struct QUIC_SLIST_ENTRY {
+    struct QUIC_SLIST_ENTRY* Next;
+} QUIC_SLIST_ENTRY;
+
 
 #ifndef FORCEINLINE
 #if (_MSC_VER >= 1200)
@@ -60,16 +67,80 @@ typedef struct QUIC_SINGLE_LIST_ENTRY {
 // Different pool tags used for marking allocations.
 //
 
-#define QUIC_POOL_GENERIC   'CIUQ'  // QUIC - Generic QUIC
-#define QUIC_POOL_CONN      'noCQ'  // QCon - QUIC connection
-#define QUIC_POOL_TP        'PTCQ'  // QCTP - QUIC connection transport parameters
-#define QUIC_POOL_STREAM    'mtSQ'  // QStm - QUIC stream
-#define QUIC_POOL_SBUF      'fBSQ'  // QSBf - QUIC stream buffer
-#define QUIC_POOL_META      'MFSQ'  // QSFM - QUIC sent frame metedata
-#define QUIC_POOL_DATA      'atDQ'  // QDta - QUIC datagram buffer
-#define QUIC_POOL_TEST      'tsTQ'  // QTst - QUIC test code
-#define QUIC_POOL_PERF      'frPQ'  // QPrf - QUIC perf code
-#define QUIC_POOL_TOOL      'loTQ'  // QTol - QUIC tool code
+#define QUIC_POOL_GENERIC                   'CIUQ' // QUIC - Generic QUIC
+#define QUIC_POOL_SILO                      '00cQ' // Qc00 - QUIC Silo
+#define QUIC_POOL_CONN                      '10cQ' // Qc01 - QUIC connection
+#define QUIC_POOL_TP                        '20cQ' // Qc02 - QUIC connection transport parameters
+#define QUIC_POOL_STREAM                    '30cQ' // Qc03 - QUIC stream
+#define QUIC_POOL_SBUF                      '40cQ' // Qc04 - QUIC stream buffer
+#define QUIC_POOL_META                      '50cQ' // Qc05 - QUIC sent frame metadata
+#define QUIC_POOL_DATA                      '60cQ' // Qc06 - QUIC datagram buffer
+#define QUIC_POOL_TEST                      '70cQ' // Qc07 - QUIC test code
+#define QUIC_POOL_PERF                      '80cQ' // Qc08 - QUIC perf code
+#define QUIC_POOL_TOOL                      '90cQ' // Qc09 - QUIC tool code
+#define QUIC_POOL_WORKER                    'A0cQ' // Qc0A - QUIC Worker
+#define QUIC_POOL_LISTENER                  'B0cQ' // Qc0B - QUIC Listener
+#define QUIC_POOL_CID                       'C0cQ' // Qc0C - QUIC CID
+#define QUIC_POOL_CIDHASH                   'D0cQ' // Qc0D - QUIC CID Hash
+#define QUIC_POOL_CIDLIST                   'E0cQ' // Qc0E - QUIC CID List Entry
+#define QUIC_POOL_CIDPREFIX                 'F0cQ' // Qc0F - QUIC CID Prefix
+#define QUIC_POOL_ALPN                      '01cQ' // Qc10 - QUIC ALPN
+#define QUIC_POOL_RANGE                     '11cQ' // Qc11 - QUIC Range
+#define QUIC_POOL_SENDBUF                   '21cQ' // Qc12 - QUIC Send Buffer
+#define QUIC_POOL_RECVBUF                   '31cQ' // Qc13 - QUIC Recv Buffer
+#define QUIC_POOL_TIMERWHEEL                '41cQ' // Qc14 - QUIC Timer Wheel
+#define QUIC_POOL_REGISTRATION              '51cQ' // Qc15 - QUIC Registration
+#define QUIC_POOL_CONFIG                    '61cQ' // Qc16 - QUIC configuration
+#define QUIC_POOL_BINDING                   '71cQ' // Qc17 - QUIC Core binding
+#define QUIC_POOL_API                       '81cQ' // Qc18 - QUIC API Table
+#define QUIC_POOL_PERPROC                   '91cQ' // Qc19 - QUIC Per Proc Context
+#define QUIC_POOL_PLATFORM_SENDCTX          'A1cQ' // Qc1A - QUIC Platform Send Context
+#define QUIC_POOL_TLS_ACHCTX                'B1cQ' // Qc1B - QUIC Platform TLS ACH Context
+#define QUIC_POOL_TLS_SNI                   'C1cQ' // Qc1C - QUIC Platform TLS SNI
+#define QUIC_POOL_TLS_PRINCIPAL             'D1cQ' // Qc1D - QUIC Platform TLS Principal
+#define QUIC_POOL_TLS_CTX                   'E1cQ' // Qc1E - QUIC Platform TLS Context
+#define QUIC_POOL_TLS_TRANSPARAMS           'F1cQ' // Qc1F - QUIC Platform TLS Transport Parameters
+#define QUIC_POOL_CUSTOM_THREAD             '02cQ' // Qc20 - QUIC Platform Customm Thread Context
+#define QUIC_POOL_TLS_SECCONF               '12cQ' // Qc21 - QUIC Platform TLS Sec Config
+#define QUIC_POOL_TLS_PACKETKEY             '22cQ' // Qc22 - QUIC Platform TLS Packet Key
+#define QUIC_POOL_TLS_KEY                   '32cQ' // Qc23 - QUIC Platform TLS Key
+#define QUIC_POOL_TLS_HP_KEY                '42cQ' // Qc24 - QUIC Platform TLS HP Key
+#define QUIC_POOL_TLS_HASH                  '52cQ' // Qc25 - QUIC Platform TLS Hash
+#define QUIC_POOL_TLS_EXTRAS                '62cQ' // Qc26 - QUIC Platform TLS Extra Data
+#define QUIC_POOL_TMP_ALLOC                 '72cQ' // Qc27 - QUIC temporary alloc
+#define QUIC_POOL_PLATFORM_TMP_ALLOC        '82cQ' // Qc28 - QUIC Platform temporary alloc
+#define QUIC_POOL_PLATFORM_PROC             '92cQ' // Qc29 - QUIC Platform Processor info
+#define QUIC_POOL_PLATFORM_GENERIC          'A2cQ' // Qc2A - QUIC Platform generic
+#define QUIC_POOL_DATAPATH                  'B2cQ' // Qc2B - QUIC Platform datapath
+#define QUIC_POOL_SOCKET                    'C2cQ' // Qc2C - QUIC Platform socket
+#define QUIC_POOL_STORAGE                   'D2cQ' // Qc2D - QUIC Platform storage
+#define QUIC_POOL_HASHTABLE                 'E2cQ' // Qc2E - QUIC Platform hashtable
+#define QUIC_POOL_HASHTABLE_MEMBER          'F2cQ' // Qc2F - QUIC Platform hashtable member lists
+#define QUIC_POOL_LOOKUP_HASHTABLE          '03cQ' // Qc30 - QUIC Lookup Hash Table
+#define QUIC_POOL_REMOTE_HASH               '13cQ' // Qc31 - QUIC Remote Hash Entry
+#define QUIC_POOL_SERVERNAME                '23cQ' // Qc32 - QUIC Server Name
+#define QUIC_POOL_APP_RESUMPTION_DATA       '33cQ' // Qc33 - QUIC App Resumption Data
+#define QUIC_POOL_INITIAL_TOKEN             '43cQ' // Qc34 - QUIC Initial Token
+#define QUIC_POOL_CLOSE_REASON              '53cQ' // Qc35 - QUIC Close Reason
+#define QUIC_POOL_SERVER_CRYPTO_TICKET      '63cQ' // Qc36 - QUIC Crypto Server Ticket Buffer
+#define QUIC_POOL_CLIENT_CRYPTO_TICKET      '73cQ' // Qc37 - QUIC Crypto Client Ticket Buffer
+#define QUIC_POOL_CRYPTO_RESUMPTION_TICKET  '83cQ' // Qc38 - QUIC Crypto Resumption Ticket
+#define QUIC_POOL_TLS_BUFFER                '93cQ' // Qc39 - QUIC Tls Buffer
+#define QUIC_POOL_SEND_REQUEST              'A3cQ' // Qc3A - QUIC Send Request
+#define QUIC_POOL_API_CTX                   'B3cQ' // Qc3B - QUIC API Context
+#define QUIC_POOL_STATELESS_CTX             'C3cQ' // Qc3C - QUIC Stateless Context
+#define QUIC_POOL_OPER                      'D3cQ' // Qc3D - QUIC Operation
+#define QUIC_POOL_EVENT                     'E3cQ' // Qc3E - QUIC Event
+#define QUIC_POOL_TLS_RSA                   'F3cQ' // Qc3F - QUIC Platform NCrypt RSA Key
+#define QUIC_POOL_DESIRED_VER_LIST          '04cQ' // Qc40 - QUIC App-supplied desired versions list
+#define QUIC_POOL_DEFAULT_COMPAT_VER_LIST   '14cQ' // Qc41 - QUIC Default compatible versions list
+#define QUIC_POOL_VERSION_INFO              '24cQ' // Qc42 - QUIC Version info
+#define QUIC_POOL_PROCESS                   '34cQ' // Qc43 - QUIC Process
+#define QUIC_POOL_TLS_TMP_TP                '44cQ' // Qc44 - QUIC Platform TLS Temporary TP storage
+#define QUIC_POOL_PCP                       '54cQ' // Qc45 - QUIC PCP
+#define QUIC_POOL_DATAPATH_ADDRESSES        '64cQ' // Qc46 - QUIC Datapath Addresses
+#define QUIC_POOL_TLS_TICKET_KEY            '74cQ' // Qc47 - QUIC Platform TLS ticket key
+#define QUIC_POOL_TLS_CIPHER_SUITE_STRING   '84cQ' // Qc48 - QUIC TLS cipher suite string
 
 typedef enum QUIC_THREAD_FLAGS {
     QUIC_THREAD_FLAG_NONE               = 0x0000,
@@ -90,12 +161,71 @@ DEFINE_ENUM_FLAG_OPERATORS(QUIC_THREAD_FLAGS);
 #include <quic_platform_winuser.h>
 #elif QUIC_PLATFORM_LINUX
 #define QUIC_PLATFORM_TYPE 3
+#define QUIC_PLATFORM_USES_TLS_BUILTIN_CERTIFICATE 1
 #include <quic_platform_linux.h>
+#elif QUIC_PLATFORM_DARWIN
+#define QUIC_PLATFORM_TYPE 4
+#define QUIC_PLATFORM_USES_TLS_BUILTIN_CERTIFICATE 1
+#include <quic_platform_posix.h>
 #else
 #define QUIC_PLATFORM_TYPE 0xFF
 #error "Unsupported Platform"
 #endif
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+//
+// Called in main, DLLMain or DriverEntry.
+//
+PAGEDX
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+uicSystemLoad(
+    void
+    );
+
+//
+// Called in main, DLLMain or DriverEntry.
+//
+PAGEDX
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicSystemUnload(
+    void
+    );
+
+//
+// Initializes the PAL library. Calls to this and
+// QuicformUninitialize must be serialized and cannot overlap.
+//
+PAGEDX
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QuicInitialize(
+    void
+    );
+
+//
+// Uninitializes the PAL library. Calls to this and
+// QuicformInitialize must be serialized and cannot overlap.
+//
+PAGEDX
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicUninitialize(
+    void
+    );
+
+#if defined(__cplusplus)
+}
+#endif
+
+
+//
+// List Abstraction
+//
 #define QuicListEntryValidate(Entry) \
     QUIC_DBG_ASSERT( \
         (((Entry->Flink)->Blink) == Entry) && \
@@ -230,8 +360,8 @@ QuicListMoveItems(
 FORCEINLINE
 void
 QuicListPushEntry(
-    _Inout_ QUIC_SINGLE_LIST_ENTRY* ListHead,
-    _Inout_ __drv_aliasesMem QUIC_SINGLE_LIST_ENTRY* Entry
+    _Inout_ QUIC_SLIST_ENTRY* ListHead,
+    _Inout_ __drv_aliasesMem QUIC_SLIST_ENTRY* Entry
     )
 {
     Entry->Next = ListHead->Next;
@@ -239,12 +369,12 @@ QuicListPushEntry(
 }
 
 FORCEINLINE
-QUIC_SINGLE_LIST_ENTRY*
+QUIC_SLIST_ENTRY*
 QuicListPopEntry(
-    _Inout_ QUIC_SINGLE_LIST_ENTRY* ListHead
+    _Inout_ QUIC_SLIST_ENTRY* ListHead
     )
 {
-    QUIC_SINGLE_LIST_ENTRY* FirstEntry = ListHead->Next;
+    QUIC_SLIST_ENTRY* FirstEntry = ListHead->Next;
     if (FirstEntry != NULL) {
         ListHead->Next = FirstEntry->Next;
     }
@@ -254,10 +384,28 @@ QuicListPopEntry(
 #include "quic_hashtable.h"
 #include "quic_toeplitz.h"
 
+
+#ifdef DEBUG
+void
+QuicSetAllocFailDenominator(
+    _In_ int32_t Value
+    );
+
+int32_t
+QuicGetAllocFailDenominator(
+    );
+#endif
+
+#ifdef DEBUG
+#define QuicIsRandomMemoryFailureEnabled() (QuicGetAllocFailDenominator() != 0)
+#else
+#define QuicIsRandomMemoryFailureEnabled() (FALSE)
+#endif
+
+
 //
 // Test Interface for loading a self-signed certificate.
 //
-
 #ifdef QUIC_TEST_APIS
 
 #if defined(__cplusplus)
@@ -265,11 +413,21 @@ extern "C" {
 #endif
 
 typedef struct QUIC_CREDENTIAL_CONFIG QUIC_CREDENTIAL_CONFIG;
+typedef struct QUIC_CERTIFICATE_HASH QUIC_CERTIFICATE_HASH;
+typedef struct QUIC_CERTIFICATE_HASH_STORE QUIC_CERTIFICATE_HASH_STORE;
+
 
 typedef enum QUIC_SELF_SIGN_CERT_TYPE {
     QUIC_SELF_SIGN_CERT_USER,
     QUIC_SELF_SIGN_CERT_MACHINE
 } QUIC_SELF_SIGN_CERT_TYPE;
+
+typedef enum QUIC_TEST_CERT_TYPE {
+    QUIC_TEST_CERT_VALID_SERVER,
+    QUIC_TEST_CERT_VALID_CLIENT,
+    QUIC_TEST_CERT_EXPIRED_SERVER,
+    QUIC_TEST_CERT_EXPIRED_CLIENT,
+} QUIC_TEST_CERT_TYPE;
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 const QUIC_CREDENTIAL_CONFIG*
@@ -277,14 +435,39 @@ QuicPlatGetSelfSignedCert(
     _In_ QUIC_SELF_SIGN_CERT_TYPE Type
     );
 
+_Success_(return == TRUE)
+BOOLEAN
+QuicGetTestCertificate(
+    _In_ QUIC_TEST_CERT_TYPE Type,
+    _In_ QUIC_SELF_SIGN_CERT_TYPE StoreType,
+    _In_ uint32_t CredType,
+    _Out_ QUIC_CREDENTIAL_CONFIG* Params,
+    _When_(CredType == QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH, _Out_)
+    _When_(CredType != QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH, _Reserved_)
+        QUIC_CERTIFICATE_HASH* CertHash,
+    _When_(CredType == QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH_STORE, _Out_)
+    _When_(CredType != QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH_STORE, _Reserved_)
+        QUIC_CERTIFICATE_HASH_STORE* CertHashStore,
+    _When_(CredType == QUIC_CREDENTIAL_TYPE_NONE, _Out_z_bytecap_(100))
+    _When_(CredType != QUIC_CREDENTIAL_TYPE_NONE, _Reserved_)
+        char Principal[100]
+    );
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicPlatFreeSelfSignedCert(
     _In_ const QUIC_CREDENTIAL_CONFIG* CredConfig
     );
 
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void 
+QuicFreeTestCert(
+    _In_ QUIC_CREDENTIAL_CONFIG* Params
+    );
 #if defined(__cplusplus)
 }
 #endif
 
 #endif // QUIC_TEST_APIS
+
+
+

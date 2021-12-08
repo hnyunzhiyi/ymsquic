@@ -12,6 +12,7 @@
 
 #include "quic_platform.h"
 #include "quic_datapath.h"
+#include "quic_pcp.h"
 #include "quic_cert.h"
 #include "quic_storage.h"
 #include "quic_tls.h"
@@ -43,19 +44,37 @@
 typedef struct QUIC_PLATFORM {
 
     PDRIVER_OBJECT DriverObject;
-
     //
-    // Random number algorithm loaded for DISPATCH_LEVEL usage.
-    //
+    //Random number algorithm loaded for DISPATCH_LEVEL usage.
+    //        
     BCRYPT_ALG_HANDLE RngAlgorithm;
+
+#ifdef DEBUG
+    //
+    //1/Denominator of allocations to fail.
+    //Negative is Nth allocation to fail.
+    //          
+    int32_t AllocFailDenominator;
+    //
+    //Count of allocations.
+    //       
+    long AllocCounter;
+#endif
 
 } QUIC_PLATFORM;
 
 #elif _WIN32
 
+#pragma warning(push)
+#pragma warning(disable:6385) // Invalid data: accessing [buffer-name], the readable size is size1 bytes but size2 bytes may be read
+#pragma warning(disable:6101) // Returning uninitialized memory
+
 #include <ws2tcpip.h>
-#include <mswsock.h>
 #include <mstcpip.h>
+#pragma warning(pop)
+
+#include <mswsock.h>
+
 #if DEBUG
 #include <crtdbg.h>
 #endif
@@ -69,6 +88,18 @@ typedef struct QUIC_PLATFORM {
     //
     HANDLE Heap;
 
+#ifdef DEBUG
+    //
+    //1/Denominator of allocations to fail.
+    //Negative is Nth allocation to fail.
+    //           
+    int32_t AllocFailDenominator;
+    //
+    //Count of allocations.
+    //       
+    long AllocCounter;
+#endif
+
 } QUIC_PLATFORM;
 
 #elif QUIC_PLATFORM_LINUX
@@ -76,6 +107,17 @@ typedef struct QUIC_PLATFORM {
 typedef struct QUIC_PLATFORM {
 
     void* Reserved; // Nothing right now.
+#ifdef DEBUG
+    //
+    //1/Denominator of allocations to fail.
+    //Negative is Nth allocation to fail.
+    //           
+    int32_t AllocFailDenominator;
+    //
+    //Count of allocations.
+    //        
+    long AllocCounter;
+#endif
 
 } QUIC_PLATFORM;
 
@@ -92,6 +134,7 @@ typedef struct QUIC_PLATFORM {
 // Global Platform variables/state.
 //
 extern QUIC_PLATFORM QuicPlatform;
+QUIC_DATAPATH_RECEIVE_CALLBACK QuicPcpRecvCallback;
 
 #if _WIN32 // Some Windows Helpers
 

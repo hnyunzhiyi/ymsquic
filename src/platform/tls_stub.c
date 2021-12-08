@@ -494,7 +494,7 @@ QuicTlsServerProcess(
     uint16_t DrainLength = 0;
 
     QUIC_FRE_ASSERT(State->BufferLength < State->BufferAllocLength);
-    __assume(State->BufferLength < State->BufferAllocLength);
+    //__assume(State->BufferLength < State->BufferAllocLength);
 
     const QUIC_FAKE_TLS_MESSAGE* ClientMessage =
         (QUIC_FAKE_TLS_MESSAGE*)Buffer;
@@ -744,7 +744,7 @@ QuicTlsClientProcess(
     uint16_t DrainLength = 0;
 
     QUIC_FRE_ASSERT(State->BufferLength < State->BufferAllocLength);
-    __assume(State->BufferLength < State->BufferAllocLength);
+    //__assume(State->BufferLength < State->BufferAllocLength);
 
     const QUIC_FAKE_TLS_MESSAGE* ServerMessage =
         (QUIC_FAKE_TLS_MESSAGE*)Buffer;

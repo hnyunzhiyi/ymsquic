@@ -98,6 +98,7 @@ void
 QuicAckTrackerAckPacket(
     _Inout_ QUIC_ACK_TRACKER* Tracker,
     _In_ uint64_t PacketNumber,
+	_In_ uint64_t RecvTimeUs,
     _In_ QUIC_ECN_TYPE ECN,
     _In_ BOOLEAN AckElicitingPayload
     )
@@ -109,7 +110,7 @@ QuicAckTrackerAckPacket(
 
     uint64_t CurLargestPacketNumber;
     if (QuicRangeGetMaxSafe(&Tracker->PacketNumbersToAck, &CurLargestPacketNumber) &&
-        CurLargestPacketNumber + 1 != PacketNumber) {
+        CurLargestPacketNumber > PacketNumber) {
         //
         // Any time the next expected packet number doesn't match the one we
         // received, we consider it reordering.
@@ -134,7 +135,7 @@ QuicAckTrackerAckPacket(
     BOOLEAN NewLargestPacketNumber =
         PacketNumber == QuicRangeGetMax(&Tracker->PacketNumbersToAck);
     if (NewLargestPacketNumber) {
-        Tracker->LargestPacketNumberRecvTime = QuicTimeUs64();
+        Tracker->LargestPacketNumberRecvTime = RecvTimeUs;
     }
 
     switch (ECN) {
@@ -179,12 +180,13 @@ QuicAckTrackerAckPacket(
     // packet received, we make sure the ACK delay timer is started.
     //
 
-    if (Tracker->AckElicitingPacketsToAcknowledge >= QUIC_MIN_ACK_SEND_NUMBER ||
+    if (Tracker->AckElicitingPacketsToAcknowledge >= (uint16_t)(Connection->PacketTolerance) ||
+		(!Connection->State.IgnoreReordering &&
         (NewLargestPacketNumber &&
          QuicRangeSize(&Tracker->PacketNumbersToAck) > 1 && // There are more than two ranges, i.e. a gap somewhere.
             QuicRangeGet(
             &Tracker->PacketNumbersToAck,
-         QuicRangeSize(&Tracker->PacketNumbersToAck) - 1)->Count == 1)) { // The gap is right before the last packet number.
+         QuicRangeSize(&Tracker->PacketNumbersToAck) - 1)->Count == 1))) { // The gap is right before the last packet number.
         //
         // Always send an ACK immediately if we have received enough ACK
         // eliciting packets OR the latest one indicate a gap in the packet

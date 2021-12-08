@@ -111,11 +111,17 @@ typedef enum QUIC_TRACE_LEVEL {
 #ifdef __cplusplus
 extern "C"
 #endif
+typedef
+_Function_class_(QUIC_TRACE_RUNDOWN_CALLBACK)
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
-QuicTraceRundown(
+(QUIC_TRACE_RUNDOWN_CALLBACK)(
     void
     );
+
+extern QUIC_TRACE_RUNDOWN_CALLBACK* QuicTraceRundownCallback;
+
+
 
 #ifdef QUIC_CLOG
 #define QuicTraceLogStreamVerboseEnabled() TRUE
@@ -129,9 +135,19 @@ QuicTraceRundown(
 
 #ifdef QUIC_EVENTS_STUB
 #define QuicTraceEventEnabled(Name)  FALSE
+
+inline
+void
+QuicTraceEventStubVarArgs(
+    _In_ const void* Fmt,
+    ...
+    )
+{
+    UNREFERENCED_PARAMETER(Fmt);
+}
+
 #define QuicTraceEvent(...)          syslog(LOG_ERR, __VA_ARGS__) 
 #endif // QUIC_EVENTS_STUB
-
 
 
 #ifdef QUIC_EVENTS_MANIFEST_ETW

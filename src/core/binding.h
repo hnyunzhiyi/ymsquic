@@ -127,8 +127,7 @@ typedef struct QUIC_RECV_PACKET {
     // Flag indicating the packet couldn't be decrypted yet, because the key
     // isn't available yet; so the packet was deferred for later.
     //
-    BOOLEAN DecryptionDeferred : 1;
-
+	BOOLEAN ReleaseDeferred : 1;
     //
     // Flag indicating the packet was completely parsed successfully.
     //
@@ -203,10 +202,10 @@ typedef struct QUIC_BINDING {
 #endif
 
     //
-    // The datapath binding.
-    //
-    QUIC_DATAPATH_BINDING* DatapathBinding;
-
+    //The datapath binding.
+    //     
+   	QUIC_SOCKET* Socket;
+    
     //
     // Lock for accessing the listeners.
     //
@@ -223,11 +222,6 @@ typedef struct QUIC_BINDING {
     QUIC_LOOKUP Lookup;
 
     //
-    // Used for generating stateless reset hashes.
-    //
-    QUIC_HASH* ResetTokenHash;
-    QUIC_DISPATCH_LOCK ResetTokenLock;
-
     //
     // Stateless operation tracking structures.
     //
@@ -259,13 +253,7 @@ QUIC_DATAPATH_UNREACHABLE_CALLBACK QuicBindingUnreachable;
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QuicBindingInitialize(
-#ifdef QUIC_COMPARTMENT_ID
-    _In_ QUIC_COMPARTMENT_ID CompartmentId,
-#endif
-    _In_ BOOLEAN ShareBinding,
-    _In_ BOOLEAN ServerOwned,
-    _In_opt_ const QUIC_ADDR * LocalAddress,
-    _In_opt_ const QUIC_ADDR * RemoteAddress,
+    _In_ const QUIC_UDP_CONFIG* UdpConfig,
     _Out_ QUIC_BINDING** NewBinding
     );
 
@@ -289,6 +277,28 @@ QuicBindingTraceRundown(
     );
 
 //
+// Queries the local IP address of the binding.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicBindingGetLocalAddress(
+    _In_ QUIC_BINDING* Binding,
+    _Out_ QUIC_ADDR* Address
+    );
+
+//
+// Queries the remote IP address of the binding.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicBindingGetRemoteAddress(
+    _In_ QUIC_BINDING* Binding,
+    _Out_ QUIC_ADDR* Address
+    );
+
+
+
+//
 // Looks up the listener based on the ALPN list. Optionally, outputs the
 // first ALPN that matches.
 //
@@ -297,6 +307,7 @@ _Success_(return != NULL)
 QUIC_LISTENER*
 QuicBindingGetListener(
     _In_ QUIC_BINDING* Binding,
+	_In_opt_ QUIC_CONNECTION* Connection,
     _Inout_ QUIC_NEW_CONNECTION_INFO* Info
     );
 
@@ -350,7 +361,7 @@ void
 QuicBindingRemoveSourceConnectionID(
     _In_ QUIC_BINDING* Binding,
     _In_ QUIC_CID_HASH_ENTRY* SourceCid,
-    _In_ QUIC_SINGLE_LIST_ENTRY** Entry
+    _In_ QUIC_SLIST_ENTRY** Entry
     );
 
 //
@@ -387,6 +398,17 @@ QuicBindingOnConnectionHandshakeConfirmed(
     );
 
 //
+// Queues a stateless operation on the binding.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+BOOLEAN
+QuicBindingQueueStatelessOperation(
+    _In_ QUIC_BINDING* Binding,
+    _In_ QUIC_OPERATION_TYPE OperType,
+    _In_ QUIC_RECV_DATA* Datagram
+    );
+
+//
 // Processes a stateless operation that was queued.
 //
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -406,19 +428,6 @@ QuicBindingReleaseStatelessOperation(
     _In_ BOOLEAN ReturnDatagram
     );
 
-//
-// Sends data to a remote host. Note, the buffer must remain valid for
-// the duration of the send operation.
-//
-_IRQL_requires_max_(DISPATCH_LEVEL)
-QUIC_STATUS
-QuicBindingSendTo(
-    _In_ QUIC_BINDING* Binding,
-    _In_ const QUIC_ADDR * RemoteAddress,
-    _In_ QUIC_DATAPATH_SEND_CONTEXT* SendContext,
-    _In_ uint32_t BytesToSend,
-    _In_ uint32_t DatagramsToSend
-    );
 
 //
 // Sends data to a remote host. Note, the buffer must remain valid for
@@ -426,26 +435,14 @@ QuicBindingSendTo(
 //
 _IRQL_requires_max_(DISPATCH_LEVEL)
 QUIC_STATUS
-QuicBindingSendFromTo(
+QuicBindingSend(
     _In_ QUIC_BINDING* Binding,
     _In_ const QUIC_ADDR * LocalAddress,
     _In_ const QUIC_ADDR * RemoteAddress,
-    _In_ QUIC_DATAPATH_SEND_CONTEXT* SendContext,
+    _In_ QUIC_SEND_DATA* SendData,
     _In_ uint32_t BytesToSend,
-    _In_ uint32_t DatagramsToSend
-    );
-
-//
-// Generates a stateless reset token for the given connection ID.
-//
-_IRQL_requires_max_(DISPATCH_LEVEL)
-QUIC_STATUS
-QuicBindingGenerateStatelessResetToken(
-    _In_ QUIC_BINDING* Binding,
-    _In_reads_(MsQuicLib.CidTotalLength)
-        const uint8_t* const CID,
-    _Out_writes_all_(QUIC_STATELESS_RESET_TOKEN_LENGTH)
-        uint8_t* ResetToken
+    _In_ uint32_t DatagramsToSend,
+    _In_ uint16_t IdealProcessor
     );
 
 //
@@ -466,14 +463,14 @@ QuicRetryTokenDecrypt(
     //
     QuicCopyMemory(Token, TokenBuffer, sizeof(QUIC_RETRY_TOKEN_CONTENTS));
 
-    uint8_t Iv[QUIC_IV_LENGTH];
-    if (MsQuicLib.CidTotalLength >= sizeof(Iv)) {
-        QuicCopyMemory(Iv, Packet->DestCid, sizeof(Iv));
-        for (uint8_t i = sizeof(Iv); i < MsQuicLib.CidTotalLength; ++i) {
-            Iv[i % sizeof(Iv)] ^= Packet->DestCid[i];
+    uint8_t Iv[QUIC_MAX_IV_LENGTH];
+    if (MsQuicLib.CidTotalLength >= QUIC_IV_LENGTH) {
+        QuicCopyMemory(Iv, Packet->DestCid, QUIC_IV_LENGTH);
+        for (uint8_t i = QUIC_IV_LENGTH; i < MsQuicLib.CidTotalLength; ++i) {
+            Iv[i % QUIC_IV_LENGTH] ^= Packet->DestCid[i];
         }
     } else {
-        QuicZeroMemory(Iv, sizeof(Iv));
+        QuicZeroMemory(Iv, QUIC_IV_LENGTH);
         QuicCopyMemory(Iv, Packet->DestCid, MsQuicLib.CidTotalLength);
     }
 

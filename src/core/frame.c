@@ -22,6 +22,29 @@ QuicUint8Encode(
     return Buffer + sizeof(uint8_t);
 }
 
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicUint8tDecode(
+    _In_ uint16_t BufferLength,
+    _In_reads_bytes_(BufferLength)
+        const uint8_t * const Buffer,
+    _Inout_
+    _Deref_in_range_(0, BufferLength)
+    _Deref_out_range_(0, BufferLength)
+        uint16_t* Offset,
+    _Out_ uint8_t* Value
+    )
+{
+    if (BufferLength < sizeof(uint8_t) + *Offset) {
+        return FALSE;
+    }
+    *Value = Buffer[*Offset];
+    *Offset += sizeof(uint8_t);
+    return TRUE;
+}
+
+
 _Success_(return != FALSE)
 BOOLEAN
 QuicAckHeaderEncode(
@@ -48,7 +71,7 @@ QuicAckHeaderEncode(
     Buffer = QuicVarIntEncode(Frame->LargestAcknowledged, Buffer);
     Buffer = QuicVarIntEncode(Frame->AckDelay, Buffer);
     Buffer = QuicVarIntEncode(Frame->AdditionalAckBlockCount, Buffer);
-    Buffer = QuicVarIntEncode(Frame->FirstAckBlock, Buffer);
+    QuicVarIntEncode(Frame->FirstAckBlock, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -93,7 +116,7 @@ QuicAckBlockEncode(
 
     Buffer = Buffer + *Offset;
     Buffer = QuicVarIntEncode(Block->Gap, Buffer);
-    Buffer = QuicVarIntEncode(Block->AckBlock, Buffer);
+    QuicVarIntEncode(Block->AckBlock, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -137,7 +160,7 @@ QuicAckEcnEncode(
     Buffer = Buffer + *Offset;
     Buffer = QuicVarIntEncode(Ecn->ECT_0_Count, Buffer);
     Buffer = QuicVarIntEncode(Ecn->ECT_1_Count, Buffer);
-    Buffer = QuicVarIntEncode(Ecn->CE_Count, Buffer);
+    QuicVarIntEncode(Ecn->CE_Count, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -360,7 +383,7 @@ QuicResetStreamFrameEncode(
     Buffer = QuicUint8Encode(QUIC_FRAME_RESET_STREAM, Buffer);
     Buffer = QuicVarIntEncode(Frame->StreamID, Buffer);
     Buffer = QuicVarIntEncode(Frame->ErrorCode, Buffer);
-    Buffer = QuicVarIntEncode(Frame->FinalSize, Buffer);
+    QuicVarIntEncode(Frame->FinalSize, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -405,7 +428,7 @@ QuicStopSendingFrameEncode(
     Buffer = Buffer + *Offset;
     Buffer = QuicUint8Encode(QUIC_FRAME_STOP_SENDING, Buffer);
     Buffer = QuicVarIntEncode(Frame->StreamID, Buffer);
-    Buffer = QuicVarIntEncode(Frame->ErrorCode, Buffer);
+    QuicVarIntEncode(Frame->ErrorCode, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -629,7 +652,7 @@ QuicMaxDataFrameEncode(
 
     Buffer = Buffer + *Offset;
     Buffer = QuicUint8Encode(QUIC_FRAME_MAX_DATA, Buffer);
-    Buffer = QuicVarIntEncode(Frame->MaximumData, Buffer);
+    QuicVarIntEncode(Frame->MaximumData, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -672,7 +695,7 @@ QuicMaxStreamDataFrameEncode(
     Buffer = Buffer + *Offset;
     Buffer = QuicUint8Encode(QUIC_FRAME_MAX_STREAM_DATA, Buffer);
     Buffer = QuicVarIntEncode(Frame->StreamID, Buffer);
-    Buffer = QuicVarIntEncode(Frame->MaximumData, Buffer);
+    QuicVarIntEncode(Frame->MaximumData, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -719,7 +742,7 @@ QuicMaxStreamsFrameEncode(
                 QUIC_FRAME_MAX_STREAMS :
                 QUIC_FRAME_MAX_STREAMS_1,
             Buffer);
-    Buffer = QuicVarIntEncode(Frame->MaximumStreams, Buffer);
+    QuicVarIntEncode(Frame->MaximumStreams, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -762,7 +785,7 @@ QuicDataBlockedFrameEncode(
 
     Buffer = Buffer + *Offset;
     Buffer = QuicUint8Encode(QUIC_FRAME_DATA_BLOCKED, Buffer);
-    Buffer = QuicVarIntEncode(Frame->DataLimit, Buffer);
+    QuicVarIntEncode(Frame->DataLimit, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -805,7 +828,7 @@ QuicStreamDataBlockedFrameEncode(
     Buffer = Buffer + *Offset;
     Buffer = QuicUint8Encode(QUIC_FRAME_STREAM_DATA_BLOCKED, Buffer);
     Buffer = QuicVarIntEncode(Frame->StreamID, Buffer);
-    Buffer = QuicVarIntEncode(Frame->StreamDataLimit, Buffer);
+    QuicVarIntEncode(Frame->StreamDataLimit, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -852,7 +875,7 @@ QuicStreamsBlockedFrameEncode(
                 QUIC_FRAME_STREAMS_BLOCKED :
                 QUIC_FRAME_STREAMS_BLOCKED_1,
             Buffer);
-    Buffer = QuicVarIntEncode(Frame->StreamLimit, Buffer);
+    QuicVarIntEncode(Frame->StreamLimit, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -957,7 +980,7 @@ QuicRetireConnectionIDFrameEncode(
 
     Buffer = Buffer + *Offset;
     Buffer = QuicUint8Encode(QUIC_FRAME_RETIRE_CONNECTION_ID, Buffer);
-    Buffer = QuicVarIntEncode(Frame->Sequence, Buffer);
+    QuicVarIntEncode(Frame->Sequence, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -1160,6 +1183,61 @@ QuicDatagramFrameDecode(
     return TRUE;
 }
 
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicAckFrequencyFrameEncode(
+    _In_ const QUIC_ACK_FREQUENCY_EX * const Frame,
+    _Inout_ uint16_t* Offset,
+    _In_ uint16_t BufferLength,
+    _Out_writes_to_(BufferLength, *Offset) uint8_t* Buffer
+    )
+{
+    uint16_t RequiredLength =
+        QuicVarIntSize(QUIC_FRAME_ACK_FREQUENCY) +
+        QuicVarIntSize(Frame->SequenceNumber) +
+        QuicVarIntSize(Frame->PacketTolerance) +
+        QuicVarIntSize(Frame->UpdateMaxAckDelay) +
+        sizeof(uint8_t);    // IgnoreOrder
+
+    if (BufferLength < *Offset + RequiredLength) {
+        return FALSE;
+    }
+
+    QUIC_DBG_ASSERT(Frame->IgnoreOrder <= 1); // IgnoreOrder should only be 0 or 1.
+
+    Buffer = Buffer + *Offset;
+    Buffer = QuicVarIntEncode(QUIC_FRAME_ACK_FREQUENCY, Buffer);
+    Buffer = QuicVarIntEncode(Frame->SequenceNumber, Buffer);
+    Buffer = QuicVarIntEncode(Frame->PacketTolerance, Buffer);
+    Buffer = QuicVarIntEncode(Frame->UpdateMaxAckDelay, Buffer);
+    QuicUint8Encode(Frame->IgnoreOrder, Buffer);
+    *Offset += RequiredLength;
+
+    return TRUE;
+}
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicAckFrequencyFrameDecode(
+    _In_ uint16_t BufferLength,
+    _In_reads_bytes_(BufferLength)
+        const uint8_t * const Buffer,
+    _Inout_ uint16_t* Offset,
+    _Out_ QUIC_ACK_FREQUENCY_EX* Frame
+    )
+{
+    if (!QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->SequenceNumber) ||
+        !QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->PacketTolerance) ||
+        !QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->UpdateMaxAckDelay) ||
+        !QuicUint8tDecode(BufferLength, Buffer, Offset, &Frame->IgnoreOrder) ||
+        Frame->IgnoreOrder > 1) { // IgnoreOrder should only be 0 or 1.
+        return FALSE;
+    }
+    return TRUE;
+}
+
+
 _IRQL_requires_max_(DISPATCH_LEVEL)
 BOOLEAN
 QuicFrameLog(
@@ -1172,14 +1250,22 @@ QuicFrameLog(
     _Inout_ uint16_t* Offset
     )
 {
-    QUIC_FRAME_TYPE FrameType = Packet[*Offset];
+    QUIC_VAR_INT FrameType INIT_NO_SAL(0);
+    if (!QuicVarIntDecode(PacketLength, Packet, Offset, &FrameType)) {
+        QuicTraceLogInfo(
+            "[conn][%p] ERROR, %s.",
+            Connection,
+            "Frame type decode failure");
+        QuicConnTransportError(Connection, QUIC_ERROR_FRAME_ENCODING_ERROR);
+        return FALSE;
+    }
+
     if (!QUIC_FRAME_IS_KNOWN(FrameType)) {
         QuicTraceLogVerbose(
-            "FrameLogUnknownType: [%c][%cX][%lu]   unknown frame (%hu)",
+            "FrameLogUnknownType: [%c][%cX][%lu] ",
             PtkConnPre(Connection),
             PktRxPre(Rx),
-            PacketNumber,
-            FrameType);
+            PacketNumber);
         return FALSE;
     }
 
@@ -1702,6 +1788,32 @@ QuicFrameLog(
             (uint16_t)Frame.Length);
         break;
     }
+
+    case QUIC_FRAME_ACK_FREQUENCY: {
+        QUIC_ACK_FREQUENCY_EX Frame;
+        if (!QuicAckFrequencyFrameDecode(PacketLength, Packet, Offset, &Frame)) {
+            QuicTraceLogVerbose(
+                "[%c][%cX][%lu]   ACK_FREQUENCY [Invalid]",
+                PtkConnPre(Connection),
+                PktRxPre(Rx),
+                PacketNumber);
+            return FALSE;
+        }
+
+        QuicTraceLogVerbose(
+            "[%c][%cX][%lu]   ACK_FREQUENCY SeqNum:%lu PktTolerance:%lu MaxAckDelay:%lu IgnoreOrder:%hhu",
+            PtkConnPre(Connection),
+            PktRxPre(Rx),
+            PacketNumber,
+            Frame.SequenceNumber,
+            Frame.PacketTolerance,
+            Frame.UpdateMaxAckDelay,
+            Frame.IgnoreOrder);
+        break;
+    }
+
+
+
 
     default:
         QUIC_FRE_ASSERT(FALSE);

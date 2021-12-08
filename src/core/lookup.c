@@ -86,16 +86,17 @@ QuicLookupCreateHashTable(
         QUIC_ALLOC_NONPAGED(sizeof(QUIC_PARTITIONED_HASHTABLE) * PartitionCount);
 
     if (Lookup->HASH.Tables != NULL) {
-
         uint16_t Cleanup = 0;
+		uint8_t Failed = FALSE;
         for (uint16_t i = 0; i < PartitionCount; i++) {
             if (!QuicHashtableInitializeEx(&Lookup->HASH.Tables[i].Table, QUIC_HASH_MIN_SIZE)) {
                 Cleanup = i;
+				Failed = TRUE;
                 break;
             }
             QuicDispatchRwLockInitialize(&Lookup->HASH.Tables[i].RwLock);
         }
-        if (Cleanup != 0) {
+        if (Failed) {
             for (uint16_t i = 0; i < Cleanup; i++) {
                 QuicHashtableUninitialize(&Lookup->HASH.Tables[i].Table);
             }
@@ -129,14 +130,11 @@ QuicLookupRebalance(
     if (Lookup->MaximizePartitioning) {
         PartitionCount = MsQuicLib.PartitionCount;
 
-    } else if (Lookup->PartitionCount > 0) {
+    } else if (Lookup->PartitionCount > 0 ||
+    	(Lookup->PartitionCount == 0 &&
+         Lookup->SINGLE.Connection != NULL &&
+         Lookup->SINGLE.Connection != Connection)) {
         PartitionCount = 1;
-
-    } else if (Lookup->PartitionCount == 0 &&
-        Lookup->SINGLE.Connection != NULL &&
-        Lookup->SINGLE.Connection != Connection) {
-        PartitionCount = 1;
-
     } else {
         PartitionCount = 0;
     }
@@ -170,7 +168,7 @@ QuicLookupRebalance(
             //
 
             if (PreviousLookup != NULL) {
-                QUIC_SINGLE_LIST_ENTRY* Entry =
+                QUIC_SLIST_ENTRY* Entry =
                     ((QUIC_CONNECTION*)PreviousLookup)->SourceCids.Next;
 
                 while (Entry != NULL) {
@@ -197,14 +195,15 @@ QuicLookupRebalance(
 
             QUIC_PARTITIONED_HASHTABLE* PreviousTable = PreviousLookup;
             for (uint16_t i = 0; i < PreviousPartitionCount; i++) {
-                QUIC_HASHTABLE_ENTRY* Entry;
+               
                 QUIC_HASHTABLE_ENUMERATOR Enumerator;
 #pragma warning(push)
 #pragma warning(disable:6001)
                 QuicHashtableEnumerateBegin(&PreviousTable[i].Table, &Enumerator);
 #pragma warning(pop)
                 while (TRUE) {
-                    Entry = QuicHashtableEnumerateNext(&PreviousTable[i].Table, &Enumerator);
+                    QUIC_HASHTABLE_ENTRY* Entry = 
+						QuicHashtableEnumerateNext(&PreviousTable[i].Table, &Enumerator);
                     if (Entry == NULL) {
                         QuicHashtableEnumerateEnd(&PreviousTable[i].Table, &Enumerator);
                         break;
@@ -277,7 +276,7 @@ QuicCidMatchConnection(
     _In_ uint8_t Length
     )
 {
-    for (QUIC_SINGLE_LIST_ENTRY* Link = Connection->SourceCids.Next;
+    for (QUIC_SLIST_ENTRY* Link = Connection->SourceCids.Next;
         Link != NULL;
         Link = Link->Next) {
 
@@ -543,9 +542,7 @@ QuicLookupInsertRemoteHash(
 
     Connection->RemoteHashEntry = Entry;
 
-    InterlockedExchangeAdd64(
-        (int64_t*)&MsQuicLib.CurrentHandshakeMemoryUsage,
-        (int64_t)QUIC_CONN_HANDSHAKE_MEMORY_USAGE);
+ 	QuicLibraryOnHandshakeConnectionAdded();
 
     if (UpdateRefCount) {
         QuicConnAddRef(Connection, QUIC_CONN_REF_LOOKUP_TABLE);
@@ -811,7 +808,7 @@ void
 QuicLookupRemoveLocalCid(
     _In_ QUIC_LOOKUP* Lookup,
     _In_ QUIC_CID_HASH_ENTRY* SourceCid,
-    _In_ QUIC_SINGLE_LIST_ENTRY** Entry
+    _In_ QUIC_SLIST_ENTRY** Entry
     )
 {
     QuicDispatchRwLockAcquireExclusive(&Lookup->RwLock);
@@ -832,9 +829,7 @@ QuicLookupRemoveRemoteHash(
     QUIC_CONNECTION* Connection = RemoteHashEntry->Connection;
     QUIC_DBG_ASSERT(Lookup->MaximizePartitioning);
 
-    InterlockedExchangeAdd64(
-        (int64_t*)&MsQuicLib.CurrentHandshakeMemoryUsage,
-        -1 * (int64_t)QUIC_CONN_HANDSHAKE_MEMORY_USAGE);
+	QuicLibraryOnHandshakeConnectionRemoved();
 
     QuicDispatchRwLockAcquireExclusive(&Lookup->RwLock);
     QUIC_DBG_ASSERT(Connection->RemoteHashEntry != NULL);
@@ -888,7 +883,7 @@ QuicLookupMoveLocalConnectionIDs(
     _In_ QUIC_CONNECTION* Connection
     )
 {
-    QUIC_SINGLE_LIST_ENTRY* Entry = Connection->SourceCids.Next;
+    QUIC_SLIST_ENTRY* Entry = Connection->SourceCids.Next;
 
     QuicDispatchRwLockAcquireExclusive(&LookupSrc->RwLock);
     while (Entry != NULL) {

@@ -84,10 +84,29 @@
 // described in Section 4.8 of [QUIC-TLS].
 //
 #define QUIC_ERROR_CRYPTO_ERROR(TlsAlertCode)   ((QUIC_VAR_INT)(0x100 | (TlsAlertCode)))
+#define IS_QUIC_CRYPTO_ERROR(QuicCryptoError)   ((QuicCryptoError & 0x100) == 0x100)
 
-#define QUIC_ERROR_CRYPTO_USER_CANCELED             QUIC_ERROR_CRYPTO_ERROR(22)  // TLS error code for 'user_canceled'
 #define QUIC_ERROR_CRYPTO_HANDSHAKE_FAILURE         QUIC_ERROR_CRYPTO_ERROR(40)  // TLS error code for 'handshake_failure'
+#define QUIC_ERROR_CRYPTO_USER_CANCELED             QUIC_ERROR_CRYPTO_ERROR(90)  // TLS error code for 'user_canceled'
 #define QUIC_ERROR_CRYPTO_NO_APPLICATION_PROTOCOL   QUIC_ERROR_CRYPTO_ERROR(120) // TLS error code for 'no_application_protocol'
+
+#define QUIC_ERROR_VERSION_NEGOTIATION_ERROR    0x53F8
+
+
+
+//
+// Used for determining which errors to count for performance counters.
+//
+inline
+BOOLEAN
+QuicErrorIsProtocolError(
+    _In_ QUIC_VAR_INT ErrorCode
+    )
+{
+    return
+        ErrorCode >= QUIC_ERROR_FLOW_CONTROL_ERROR &&
+        ErrorCode <= QUIC_ERROR_AEAD_LIMIT_REACHED;
+}
 
 //
 // Different types of QUIC frames
@@ -127,12 +146,21 @@ typedef enum QUIC_FRAME_TYPE {
     /* 0x1f to 0x2f are unused currently */
     QUIC_FRAME_DATAGRAM             = 0x30, // to 0x31
     QUIC_FRAME_DATAGRAM_1           = 0x31,
+	/* 0x32 to 0xad are unused currently */
+	QUIC_FRAME_ACK_FREQUENCY        = 0xaf,
+	QUIC_FRAME_MAX_SUPPORTED
 
 } QUIC_FRAME_TYPE;
 
+QUIC_STATIC_ASSERT(
+    QUIC_FRAME_MAX_SUPPORTED <= (uint64_t)UINT32_MAX,
+    "Logging assumes frames types fit in 32-bits");
+
 #define QUIC_FRAME_IS_KNOWN(X) \
     (X <= QUIC_FRAME_HANDSHAKE_DONE || \
-    (X >= QUIC_FRAME_DATAGRAM && X <= QUIC_FRAME_DATAGRAM_1))
+    (X >= QUIC_FRAME_DATAGRAM && X <= QUIC_FRAME_DATAGRAM_1) || \
+     X == QUIC_FRAME_ACK_FREQUENCY \
+    )	
 
 //
 // QUIC_FRAME_ACK Encoding/Decoding
@@ -183,7 +211,7 @@ QuicAckFrameDecode(
         const uint8_t * const Buffer,
     _Inout_ uint16_t* Offset,
     _Out_ BOOLEAN* InvalidFrame,
-    _Inout_ QUIC_RANGE* AckBlocks, // Pre-Initialized by caller
+    _Inout_ QUIC_RANGE* AckRanges, // Pre-Initialized by caller
     _When_(FrameType == QUIC_FRAME_ACK_1, _Out_)
         QUIC_ACK_ECN_EX* Ecn,
     _Out_ uint64_t* AckDelay
@@ -271,7 +299,7 @@ QuicCryptoFrameEncode(
     _In_ const QUIC_CRYPTO_EX * const Frame,
     _Inout_ uint16_t* Offset,
     _In_ uint16_t BufferLength,
-    _Out_writes_bytes_(BufferLength) uint8_t* Buffer
+    _Out_writes_to_(BufferLength, *Offset) uint8_t* Buffer
     );
 
 _Success_(return != FALSE)
@@ -763,13 +791,43 @@ QuicDatagramFrameDecode(
     _Out_ QUIC_DATAGRAM_EX* Frame
     );
 
+
 //
-// Helper functions
+// QUIC_ACK_FREQUENCY Encoding/Decoding
 //
+typedef struct QUIC_ACK_FREQUENCY_EX {
+
+    QUIC_VAR_INT SequenceNumber;
+    QUIC_VAR_INT PacketTolerance;
+    QUIC_VAR_INT UpdateMaxAckDelay; // In microseconds (us)
+    uint8_t IgnoreOrder;
+
+} QUIC_ACK_FREQUENCY_EX;
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicAckFrequencyFrameEncode(
+    _In_ const QUIC_ACK_FREQUENCY_EX * const Frame,
+    _Inout_ uint16_t* Offset,
+    _In_ uint16_t BufferLength,
+    _Out_writes_to_(BufferLength, *Offset)
+        uint8_t* Buffer
+    );
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicAckFrequencyFrameDecode(
+    _In_ uint16_t BufferLength,
+    _In_reads_bytes_(BufferLength)
+        const uint8_t * const Buffer,
+    _Inout_ uint16_t* Offset,
+    _Out_ QUIC_ACK_FREQUENCY_EX* Frame
+    );
 
 //
 // Gets the Stream ID from a Stream related frame.
 //
+
 inline
 _Success_(return != FALSE)
 BOOLEAN

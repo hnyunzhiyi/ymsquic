@@ -36,6 +36,7 @@
 
 	## Protocol Features
 
+	RFC: 9000, 9001, 9002 Draft: Datagram, Version Negotiation, Load Balancing, ACK Frequency, Perf Testing
 	QUIC has many benefits when compared to existing TLS over TCP scenarios:
 
 	  * Handshake authenticated with TLS 1.3
@@ -64,13 +65,13 @@
 	>  * Path MTU Discovery
 
 	## Library Features
-
 	  * Cross-platform support.
 	  * Optimized for client and server.
 	  * Optimized for maximal throughput and minimal latency.
 	  * Asynchronous IO.
 	  * Receive side scaling (RSS).
-	  * UDP send and receive coalescing support.
+	  * UDP send and receive coalescing support. 
+	  * Simulates TCP to encapsulate interfaces for sending and receiving data
 
 	# Platform Support
 
@@ -147,6 +148,8 @@
 				[-timeout:<count_ms>]
 		server: ./spinquic -server -target:<listening ip or *> [-dstport:<connect server port>] [-apln:<connect server alpn>] 
 				[-timeout:<count_ms>]
-	
-
+	example 5>:
+		client: ./tcpclient -target:<destination ip or domain> [-port:<default port:4444>]
+		server: ./tcpserver -target:<destination ip or domain> [-port:<default port:4444>]
+    
 	

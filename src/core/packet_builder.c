@@ -30,6 +30,62 @@ QuicPacketBuilderSendBatch(
     _Inout_ QUIC_PACKET_BUILDER* Builder
     );
 
+
+#if DEBUG
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicPacketBuilderValidate(
+    _In_ const QUIC_PACKET_BUILDER* Builder,
+    _In_ BOOLEAN ShouldHaveData
+    )
+{
+    if (ShouldHaveData) {
+        QUIC_DBG_ASSERT(Builder->Key != NULL);
+        QUIC_DBG_ASSERT(Builder->SendData != NULL);
+        QUIC_DBG_ASSERT(Builder->Datagram != NULL);
+        QUIC_DBG_ASSERT(Builder->DatagramLength != 0);
+        QUIC_DBG_ASSERT(Builder->HeaderLength != 0);
+        QUIC_DBG_ASSERT(Builder->Metadata->FrameCount != 0);
+    }
+
+    QUIC_DBG_ASSERT(Builder->Path != NULL);
+    QUIC_DBG_ASSERT(Builder->Path->DestCid != NULL);
+    QUIC_DBG_ASSERT(Builder->BatchCount <= QUIC_MAX_CRYPTO_BATCH_COUNT);
+
+    if (Builder->Key != NULL) {
+        QUIC_DBG_ASSERT(Builder->Key->PacketKey != NULL);
+        QUIC_DBG_ASSERT(Builder->Key->HeaderKey != NULL);
+    }
+
+    QUIC_DBG_ASSERT(Builder->EncryptionOverhead <= 16);
+    if (Builder->SendData == NULL) {
+        QUIC_DBG_ASSERT(Builder->Datagram == NULL);
+    }
+
+    if (Builder->Datagram) {
+        QUIC_DBG_ASSERT(Builder->Datagram->Length != 0);
+        QUIC_DBG_ASSERT(Builder->Datagram->Length <= UINT16_MAX);
+        QUIC_DBG_ASSERT(Builder->Datagram->Length >= Builder->MinimumDatagramLength);
+        QUIC_DBG_ASSERT(Builder->Datagram->Length > (uint32_t)Builder->DatagramLength);
+        QUIC_DBG_ASSERT(Builder->Datagram->Length >= (uint32_t)(Builder->DatagramLength + Builder->EncryptionOverhead));
+        QUIC_DBG_ASSERT(Builder->DatagramLength >= Builder->PacketStart);
+        QUIC_DBG_ASSERT(Builder->DatagramLength >= Builder->HeaderLength);
+        QUIC_DBG_ASSERT(Builder->DatagramLength >= Builder->PacketStart + Builder->HeaderLength);
+        if (Builder->PacketType != SEND_PACKET_SHORT_HEADER_TYPE) {
+            QUIC_DBG_ASSERT(Builder->PayloadLengthOffset != 0);
+            if (ShouldHaveData) {
+                QUIC_DBG_ASSERT(Builder->DatagramLength >= Builder->PacketStart + Builder->PayloadLengthOffset);
+            }
+        }
+    } else {
+        QUIC_DBG_ASSERT(Builder->DatagramLength == 0);
+        QUIC_DBG_ASSERT(Builder->Metadata->FrameCount == 0);
+    }
+}
+#else
+#define QuicPacketBuilderValidate(Builder, ShouldHaveData) // no-op
+#endif
+
 _IRQL_requires_max_(DISPATCH_LEVEL)
 _Success_(return != FALSE)
 BOOLEAN
@@ -87,10 +143,10 @@ QuicPacketBuilderCleanup(
     _Inout_ QUIC_PACKET_BUILDER* Builder
     )
 {
-    QUIC_DBG_ASSERT(Builder->SendContext == NULL);
+    QUIC_DBG_ASSERT(Builder->SendData == NULL);
 
     if (Builder->PacketBatchSent && Builder->PacketBatchRetransmittable) {
-        QuicLossDetectionUpdateTimer(&Builder->Connection->LossDetection);
+        QuicLossDetectionUpdateTimer(&Builder->Connection->LossDetection, FALSE);
     }
 
     QuicSentPacketMetadataReleaseFrames(Builder->Metadata);
@@ -139,7 +195,7 @@ QuicPacketBuilderPrepare(
         DatagramSize = (uint16_t)Builder->Path->Allowance;
     }
     QUIC_DBG_ASSERT(!IsPathMtuDiscovery || !IsTailLossProbe); // Never both.
-
+	QuicPacketBuilderValidate(Builder, FALSE);
 
     //
     // Next, make sure the current QUIC packet matches the new packet type. If
@@ -147,15 +203,21 @@ QuicPacketBuilderPrepare(
     //
 
     BOOLEAN NewQuicPacket = FALSE;
-    if (Builder->PacketType != NewPacketType || IsPathMtuDiscovery) {
+    if (Builder->PacketType != NewPacketType || IsPathMtuDiscovery ||
+        (Builder->Datagram != NULL && (Builder->Datagram->Length - Builder->DatagramLength) < QUIC_MIN_PACKET_SPARE_SPACE)) {
         //
         // The current data cannot go in the current QUIC packet. Finalize the
         // current QUIC packet up so we can create another.
         //
-        if (Builder->SendContext != NULL) {
-            QuicPacketBuilderFinalize(Builder, IsPathMtuDiscovery);
+        if (Builder->SendData != NULL) {
+            BOOLEAN FlushDatagrams = IsPathMtuDiscovery;
+            if (Builder->PacketType != NewPacketType &&
+                Builder->PacketType == SEND_PACKET_SHORT_HEADER_TYPE) {
+                FlushDatagrams = TRUE;
+            }
+            QuicPacketBuilderFinalize(Builder, FlushDatagrams);
         }
-        if (Builder->SendContext == NULL &&
+        if (Builder->SendData == NULL &&
             Builder->TotalCountDatagrams >= QUIC_MAX_DATAGRAMS_PER_SEND) {
             goto Error;
         }
@@ -164,61 +226,65 @@ QuicPacketBuilderPrepare(
     } else if (Builder->Datagram == NULL) {
         NewQuicPacket = TRUE;
 
-    } else {
-        QUIC_DBG_ASSERT(Builder->Datagram->Length - Builder->DatagramLength >= QUIC_MIN_PACKET_SPARE_SPACE);
-    }
+    } 
 
     if (Builder->Datagram == NULL) {
 
         //
         // Allocate and initialize a new send buffer (UDP packet/payload).
         //
-
-        if (Builder->SendContext == NULL) {
-            Builder->SendContext =
-                QuicDataPathBindingAllocSendContext(
-                    Builder->Path->Binding->DatapathBinding,
+		BOOLEAN SendDataAllocated = FALSE;
+        if (Builder->SendData == NULL) {
+            Builder->SendData =
+                QuicSendDataAlloc(
+                    Builder->Path->Binding->Socket,
                     QUIC_ECN_NON_ECT,
                     IsPathMtuDiscovery ?
                         0 :
                         MaxUdpPayloadSizeForFamily(
                             QuicAddrGetFamily(&Builder->Path->RemoteAddress),
                             DatagramSize));
-            if (Builder->SendContext == NULL) {
+            if (Builder->SendData == NULL) {
                 QuicTraceLogError(
                     "AllocFailure: Allocation of '%s' failed. (%u bytes)",
                     "packet send context",
                     0);
                 goto Error;
             }
+			SendDataAllocated = TRUE;
         }
 
         uint16_t NewDatagramLength =
             MaxUdpPayloadSizeForFamily(
                 QuicAddrGetFamily(&Builder->Path->RemoteAddress),
-                IsPathMtuDiscovery ? QUIC_MAX_MTU : DatagramSize);
+                IsPathMtuDiscovery ? Builder->Path->MtuDiscovery.ProbeSize : DatagramSize);
         if ((Connection->PeerTransportParams.Flags & QUIC_TP_FLAG_MAX_UDP_PAYLOAD_SIZE) &&
             NewDatagramLength > Connection->PeerTransportParams.MaxUdpPayloadSize) {
             NewDatagramLength = (uint16_t)Connection->PeerTransportParams.MaxUdpPayloadSize;
         }
 
         Builder->Datagram =
-            QuicDataPathBindingAllocSendDatagram(
-                Builder->SendContext,
+            QuicSendDataAllocBuffer(
+                Builder->SendData,
                 NewDatagramLength);
         if (Builder->Datagram == NULL) {
             QuicTraceLogError(
                 "AllocFailure: Allocation of '%s' failed. (%u bytes)",
                 "packet datagram",
                 NewDatagramLength);
+
+            if (SendDataAllocated) {
+                QuicSendDataFree(Builder->SendData);
+                Builder->SendData = NULL;
+            }
             goto Error;
         }
 
         Builder->DatagramLength = 0;
         Builder->MinimumDatagramLength = 0;
 
-        if (IsTailLossProbe && !QuicConnIsServer(Connection)) {
-            if (Connection->Crypto.TlsState.WriteKey == QUIC_PACKET_KEY_1_RTT) {
+        if (IsTailLossProbe && QuicConnIsClient(Connection)) {
+            if (NewPacketType == SEND_PACKET_SHORT_HEADER_TYPE) {
                 //
                 // Short header (1-RTT) packets need to be padded enough to
                 // elicit stateless resets from the server.
@@ -234,8 +300,7 @@ QuicPacketBuilderPrepare(
                 Builder->MinimumDatagramLength = NewDatagramLength;
             }
 
-        } else if (NewPacketType == QUIC_INITIAL &&
-            !QuicConnIsServer(Connection)) {
+        } else if (NewPacketType == QUIC_INITIAL) {
 
             //
             // Make sure to pad the packet if client Initial packets.
@@ -243,7 +308,14 @@ QuicPacketBuilderPrepare(
             Builder->MinimumDatagramLength =
                 MaxUdpPayloadSizeForFamily(
                     QuicAddrGetFamily(&Builder->Path->RemoteAddress),
-                    QUIC_INITIAL_PACKET_LENGTH);
+                    Builder->Path->Mtu);
+            if ((uint32_t)Builder->MinimumDatagramLength > Builder->Datagram->Length) {
+                //
+                //On server, if we're limited by amplification protection, just
+                //pad up to that limit instead.
+                //                                               
+                Builder->MinimumDatagramLength = (uint16_t)Builder->Datagram->Length;
+            }
 
         } else if (IsPathMtuDiscovery) {
             Builder->MinimumDatagramLength = NewDatagramLength;
@@ -271,7 +343,7 @@ QuicPacketBuilderPrepare(
         Builder->Metadata->PacketNumber = Connection->Send.NextPacketNumber++;
         Builder->Metadata->Flags.KeyType = NewPacketKeyType;
         Builder->Metadata->Flags.IsAckEliciting = FALSE;
-        Builder->Metadata->Flags.IsPMTUD = IsPathMtuDiscovery;
+        Builder->Metadata->Flags.IsMtuProbe = IsPathMtuDiscovery;
         Builder->Metadata->Flags.SuspectedLost = FALSE;
 #if DEBUG
         Builder->Metadata->Flags.Freed = FALSE;
@@ -291,11 +363,8 @@ QuicPacketBuilderPrepare(
             Builder->PacketNumberLength = 4; // TODO - Determine correct length based on BDP.
 
             switch (Connection->Stats.QuicVersion) {
-            case QUIC_VERSION_DRAFT_27:
-            case QUIC_VERSION_DRAFT_28:
+            case QUIC_VERSION_1:
             case QUIC_VERSION_DRAFT_29:
-            case QUIC_VERSION_DRAFT_30:
-            case QUIC_VERSION_DRAFT_31:
             case QUIC_VERSION_MS_1:
                 Builder->HeaderLength =
                     QuicPacketEncodeShortHeaderV1(
@@ -317,11 +386,8 @@ QuicPacketBuilderPrepare(
         } else { // Long Header
 
             switch (Connection->Stats.QuicVersion) {
-            case QUIC_VERSION_DRAFT_27:
-            case QUIC_VERSION_DRAFT_28:
+            case QUIC_VERSION_1:
             case QUIC_VERSION_DRAFT_29:
-            case QUIC_VERSION_DRAFT_30:
-            case QUIC_VERSION_DRAFT_31:
             case QUIC_VERSION_MS_1:
             default:
                 Builder->HeaderLength =
@@ -346,11 +412,11 @@ QuicPacketBuilderPrepare(
 
     QUIC_DBG_ASSERT(Builder->PacketType == NewPacketType);
     QUIC_DBG_ASSERT(Builder->Key == Connection->Crypto.TlsState.WriteKeys[NewPacketKeyType]);
-
+	QUIC_DBG_ASSERT(Builder->BatchCount == 0 || Builder->PacketType == SEND_PACKET_SHORT_HEADER_TYPE);
     Result = TRUE;
 
 Error:
-
+    QuicPacketBuilderValidate(Builder, FALSE);
     return Result;
 }
 
@@ -440,7 +506,7 @@ QuicPacketBuilderGetPacketTypeAndKeyForControlFrames(
     QuicTraceLogConnWarning(
         "GetPacketTypeFailure: Failed to get packet type for control frames, 0x%x",
         SendFlags);
-    QUIC_DBG_ASSERT(FALSE); // This shouldn't have been called then!
+    QUIC_DBG_ASSERT(QuicIsRandomMemoryFailureEnabled()); // This shouldn't have been called then!
 
     return FALSE;
 }
@@ -454,7 +520,7 @@ QuicPacketBuilderPrepareForControlFrames(
     _In_ uint32_t SendFlags
     )
 {
-    QUIC_DBG_ASSERT(!(SendFlags & QUIC_CONN_SEND_FLAG_PMTUD));
+    QUIC_DBG_ASSERT(!(SendFlags & QUIC_CONN_SEND_FLAG_DPLPMTUD));
     QUIC_PACKET_KEY_TYPE PacketKeyType;
     return
         QuicPacketBuilderGetPacketTypeAndKeyForControlFrames(
@@ -553,7 +619,7 @@ QuicPacketBuilderFinalizeHeaderProtection(
 // off.
 //
 _IRQL_requires_max_(PASSIVE_LEVEL)
-void
+BOOLEAN
 QuicPacketBuilderFinalize(
     _Inout_ QUIC_PACKET_BUILDER* Builder,
     _In_ BOOLEAN FlushBatchedDatagrams
@@ -561,6 +627,9 @@ QuicPacketBuilderFinalize(
 {
     QUIC_CONNECTION* Connection = Builder->Connection;
     BOOLEAN FinalQuicPacket = FALSE;
+    BOOLEAN CanKeepSending = TRUE;
+
+    QuicPacketBuilderValidate(Builder, FALSE);
 
     if (Builder->Datagram == NULL ||
         Builder->Metadata->FrameCount == 0) {
@@ -571,32 +640,29 @@ QuicPacketBuilderFinalize(
         if (Builder->Datagram != NULL) {
             --Connection->Send.NextPacketNumber;
             Builder->DatagramLength -= Builder->HeaderLength;
+			Builder->HeaderLength = 0;
+			CanKeepSending = FALSE;
 
             if (Builder->DatagramLength == 0) {
-                QuicDataPathBindingFreeSendDatagram(Builder->SendContext, Builder->Datagram);
+                QuicSendDataFreeBuffer(Builder->SendData, Builder->Datagram);
                 Builder->Datagram = NULL;
             }
         }
-        FinalQuicPacket = FlushBatchedDatagrams;
+
+        if (Builder->Path->Allowance != UINT32_MAX) {
+            QuicConnAddOutFlowBlockedReason(
+                Connection, QUIC_FLOW_BLOCKED_AMPLIFICATION_PROT);
+        }
+        FinalQuicPacket = FlushBatchedDatagrams && (Builder->TotalCountDatagrams != 0);
         goto Exit;
     }
+	
+	QuicPacketBuilderValidate(Builder, TRUE);
+
 
     //
     // Calculate some of the packet buffer parameters (mostly used for encryption).
     //
-
-    _Analysis_assume_(Builder->EncryptionOverhead <= 16);
-    _Analysis_assume_(Builder->Datagram->Length < 0x10000);
-    _Analysis_assume_(Builder->Datagram->Length >= (uint32_t)(Builder->DatagramLength + Builder->EncryptionOverhead));
-    _Analysis_assume_(Builder->DatagramLength >= Builder->PacketStart + Builder->HeaderLength);
-    _Analysis_assume_(Builder->DatagramLength >= Builder->PacketStart + Builder->PayloadLengthOffset);
-
-    QUIC_DBG_ASSERT(Builder->Datagram->Length >= Builder->MinimumDatagramLength);
-    QUIC_DBG_ASSERT(Builder->Datagram->Length >= (uint32_t)(Builder->DatagramLength + Builder->EncryptionOverhead));
-    QUIC_DBG_ASSERT(Builder->Metadata->FrameCount != 0);
-    QUIC_DBG_ASSERT(Builder->Key != NULL);
-    QUIC_DBG_ASSERT(Builder->Key->PacketKey != NULL);
-    QUIC_DBG_ASSERT(Builder->Key->HeaderKey != NULL);
 
     uint8_t* Header =
         (uint8_t*)Builder->Datagram->Buffer + Builder->PacketStart;
@@ -644,11 +710,8 @@ QuicPacketBuilderFinalize(
 
     if (Builder->PacketType != SEND_PACKET_SHORT_HEADER_TYPE) {
         switch (Connection->Stats.QuicVersion) {
-        case QUIC_VERSION_DRAFT_27:
-        case QUIC_VERSION_DRAFT_28:
+        case QUIC_VERSION_1:
         case QUIC_VERSION_DRAFT_29:
-        case QUIC_VERSION_DRAFT_30:
-        case QUIC_VERSION_DRAFT_31:
         case QUIC_VERSION_MS_1:
         default:
             QuicVarIntEncode2Bytes(
@@ -693,7 +756,7 @@ QuicPacketBuilderFinalize(
 
         uint8_t* Payload = Header + Builder->HeaderLength;
 
-        uint8_t Iv[QUIC_IV_LENGTH];
+        uint8_t Iv[QUIC_MAX_IV_LENGTH];
         QuicCryptoCombineIvAndPacketNumber(Builder->Key->Iv, (uint8_t*) &Builder->Metadata->PacketNumber, Iv);
 
         QUIC_STATUS Status;
@@ -800,7 +863,7 @@ QuicPacketBuilderFinalize(
     //
     // Track the sent packet.
     //
-
+    QUIC_DBG_ASSERT(Builder->Metadata->FrameCount != 0);
     Builder->Metadata->SentTime = QuicTimeUs32();
     Builder->Metadata->PacketLength =
         Builder->HeaderLength + PayloadLength;
@@ -811,14 +874,12 @@ QuicPacketBuilderFinalize(
         Builder->Metadata->PacketNumber,
         QuicPacketTraceType(Builder->Metadata),
         Builder->Metadata->PacketLength);
-    if (QUIC_FAILED(
-        QuicLossDetectionOnPacketSent(
-            &Connection->LossDetection,
-            Builder->Path,
-            Builder->Metadata))) {
-        goto Exit;
-    }
-
+   
+    QuicLossDetectionOnPacketSent(
+        &Connection->LossDetection,
+        Builder->Path,
+        Builder->Metadata);
+        
     Builder->Metadata->FrameCount = 0;
 
     if (Builder->Metadata->Flags.IsAckEliciting) {
@@ -835,24 +896,25 @@ QuicPacketBuilderFinalize(
     }
 
 Exit:
-
     //
     // Send the packet out if necessary.
     //
-
     if (FinalQuicPacket) {
         if (Builder->Datagram != NULL) {
             Builder->Datagram->Length = Builder->DatagramLength;
             Builder->Datagram = NULL;
+			Builder->DatagramLength = 0;
             ++Builder->TotalCountDatagrams;
             Builder->TotalDatagramsLength += Builder->DatagramLength;
         }
 
-        if (FlushBatchedDatagrams || QuicDataPathBindingIsSendContextFull(Builder->SendContext)) {
+        if (FlushBatchedDatagrams || QuicSendDataIsFull(Builder->SendData)) {
             if (Builder->BatchCount != 0) {
                 QuicPacketBuilderFinalizeHeaderProtection(Builder);
             }
+            QUIC_DBG_ASSERT(Builder->TotalCountDatagrams > 0);
             QuicPacketBuilderSendBatch(Builder);
+			QUIC_DBG_ASSERT(Builder->Metadata->FrameCount == 0);
         }
 
         if (Builder->PacketType == QUIC_RETRY) {
@@ -863,7 +925,22 @@ Exit:
                 QUIC_ERROR_NO_ERROR,
                 NULL);
         }
-    }
+    } else if (FlushBatchedDatagrams) {
+        if (Builder->Datagram != NULL) {
+            QuicSendDataFreeBuffer(Builder->SendData, Builder->Datagram);
+            Builder->Datagram = NULL;
+            Builder->DatagramLength = 0;
+        }
+        if (Builder->SendData != NULL) {
+            QuicSendDataFree(Builder->SendData);
+            Builder->SendData = NULL;
+        }
+	}
+    QuicPacketBuilderValidate(Builder, FALSE);
+
+    QUIC_DBG_ASSERT(!FlushBatchedDatagrams || Builder->SendData == NULL);
+
+    return CanKeepSending;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -876,25 +953,17 @@ QuicPacketBuilderSendBatch(
         "PacketBuilderSendBatch: Sending batch. %hu datagrams",
         (uint16_t)Builder->TotalCountDatagrams);
 
-    if (QuicAddrIsBoundExplicitly(&Builder->Path->LocalAddress)) {
-        QuicBindingSendTo(
-            Builder->Path->Binding,
-            &Builder->Path->RemoteAddress,
-            Builder->SendContext,
-            Builder->TotalDatagramsLength,
-            Builder->TotalCountDatagrams);
-
-    } else {
-        QuicBindingSendFromTo(
-            Builder->Path->Binding,
-            &Builder->Path->LocalAddress,
-            &Builder->Path->RemoteAddress,
-            Builder->SendContext,
-            Builder->TotalDatagramsLength,
-            Builder->TotalCountDatagrams);
-    }
+    QuicBindingSend(
+        Builder->Path->Binding,
+        &Builder->Path->LocalAddress,
+        &Builder->Path->RemoteAddress,
+        Builder->SendData,
+        Builder->TotalDatagramsLength,
+        Builder->TotalCountDatagrams,
+        Builder->Connection->Worker->IdealProcessor);
 
     Builder->PacketBatchSent = TRUE;
-    Builder->SendContext = NULL;
+    Builder->SendData = NULL;
     Builder->TotalDatagramsLength = 0;
+    Builder->Metadata->FrameCount = 0;
 }

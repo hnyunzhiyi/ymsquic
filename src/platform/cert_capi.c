@@ -363,9 +363,17 @@ QuicCertStoreFind(
     )
 {
     PCSTR OID_SERVER_AUTH = szOID_PKIX_KP_SERVER_AUTH;
+    PCSTR OID_CLIENT_AUTH = szOID_PKIX_KP_CLIENT_AUTH;
     CERT_ENHKEY_USAGE Usage;
     Usage.cUsageIdentifier = 1;
     Usage.rgpszUsageIdentifier = (LPSTR*)&OID_SERVER_AUTH;
+
+    for (int i = 0; i < 2; ++i) {
+        if (i == 0) {
+            Usage.rgpszUsageIdentifier = (LPSTR*)&OID_SERVER_AUTH;
+        } else if (i == 1) {
+            Usage.rgpszUsageIdentifier = (LPSTR*)&OID_CLIENT_AUTH;
+        }
 
     PCCERT_CONTEXT CertCtx;
     for (PCCERT_CONTEXT PrevCertCtx = NULL;
@@ -502,7 +510,7 @@ QuicCertCreate(
     QUIC_STATUS Status;
 
     if (CredConfig->Type == QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH) {
-        if (CredConfig->CertificateContext == NULL && CredConfig->Principal == NULL) {
+        if (CredConfig->CertificateHash == NULL && CredConfig->Principal == NULL) {
             Status = QUIC_STATUS_INVALID_PARAMETER;
         } else {
             Status =
@@ -549,11 +557,11 @@ QuicCertFree(
 _Success_(return != FALSE)
 BOOLEAN
 QuicCertSelect(
-    _In_opt_ PCCERT_CONTEXT CertCtx,
+    _In_opt_ QUIC_CERTIFICATE* Certificate,
     _In_reads_(SignatureAlgorithmsLength)
-        const UINT16 *SignatureAlgorithms,
+        const uint16_t *SignatureAlgorithms,
     _In_ size_t SignatureAlgorithmsLength,
-    _Out_ UINT16 *SelectedSignature
+    _Out_ uint16_t *SelectedSignature
     )
 {
     //
@@ -563,6 +571,7 @@ QuicCertSelect(
     //  anonymous(0), rsa(1), dsa(2), ecdsa(3)
     //
 
+    PCCERT_CONTEXT CertCtx = (PCCERT_CONTEXT)Certificate;
     if (CertCtx == NULL) {
         *SelectedSignature = SignatureAlgorithms[0];
         return TRUE;
@@ -777,7 +786,7 @@ QuicCertVerifyCertChainPolicy(
     memset(&HttpsPolicy, 0, sizeof(HTTPSPolicyCallbackData));
     HttpsPolicy.cbStruct = sizeof(HTTPSPolicyCallbackData);
     HttpsPolicy.dwAuthType = AUTHTYPE_SERVER;
-    HttpsPolicy.fdwChecks = IgnoreFlags;
+    HttpsPolicy.fdwChecks = 0;
     HttpsPolicy.pwszServerName = ServerName;
 
     memset(&PolicyPara, 0, sizeof(PolicyPara));
@@ -799,6 +808,14 @@ QuicCertVerifyCertChainPolicy(
             "CertVerifyCertificateChainPolicy failed");
         goto Exit;
 
+	} else if (PolicyStatus.dwError == CRYPT_E_NO_REVOCATION_CHECK &&
+        (IgnoreFlags & QUIC_CREDENTIAL_FLAG_IGNORE_NO_REVOCATION_CHECK)) {
+        Status = NO_ERROR;
+
+    } else if (PolicyStatus.dwError == CRYPT_E_REVOCATION_OFFLINE &&
+        (IgnoreFlags & QUIC_CREDENTIAL_FLAG_IGNORE_REVOCATION_OFFLINE)) {
+        Status = NO_ERROR;
+
     } else if (PolicyStatus.dwError != NO_ERROR) {
 
         Status = PolicyStatus.dwError;
@@ -807,6 +824,7 @@ QuicCertVerifyCertChainPolicy(
             Status,
             "CertVerifyCertificateChainPolicy indicated a cert error");
         goto Exit;
+
     }
 
 Exit:
@@ -823,7 +841,7 @@ Exit:
 _Success_(return != FALSE)
 BOOLEAN
 QuicCertValidateChain(
-    _In_ QUIC_CERTIFICATE* Certificate,
+    _In_ const QUIC_CERTIFICATE* Certificate,
     _In_opt_z_ PCSTR Host,
     _In_ uint32_t IgnoreFlags
     )
@@ -865,33 +883,19 @@ QuicCertValidateChain(
     }
 
     if (Host != NULL) {
-        int ServerNameLength = MultiByteToWideChar(CP_UTF8, 0, Host, -1, NULL, 0);
-        if (ServerNameLength == 0) {
-            QuicTraceLogError(
-                "LibraryErrorStatus: [lib] ERROR, %u, %s.",
-                GetLastError(),
-                "MultiByteToWideChar(1) failed");
-            goto Exit;
-        }
-
-        ServerName = (LPWSTR)QUIC_ALLOC_PAGED(ServerNameLength * sizeof(WCHAR));
-        if (ServerName == NULL) {
-            QuicTraceLogError(
-                "AllocFailure: Allocation of '%s' failed. (%llu bytes)",
-                "ServerName",
-                ServerNameLength * sizeof(WCHAR));
-            goto Exit;
-        }
-
-        ServerNameLength = MultiByteToWideChar(CP_UTF8, 0, Host, -1, ServerName, ServerNameLength);
-        if (ServerNameLength == 0) {
-            QuicTraceLogError(
-                "LibraryErrorStatus: [lib] ERROR, %u, %s.",
-                GetLastError(),
-                "MultiByteToWideChar(2) failed");
-            goto Exit;
-        }
-    }
+		QUIC_STATUS Status = 
+            QuicUtf8ToWideChar(
+                Host,
+                QUIC_POOL_PLATFORM_TMP_ALLOC,
+                &ServerName);
+		if (QUIC_FAILED(Status)) {
+			QuicTraceLogError(
+				"[ lib] ERROR, %u, %s.",
+                Status,
+    	        "Convert Host to unicode")
+				goto Exit;
+		}
+	}
 
     Result =
         NO_ERROR ==

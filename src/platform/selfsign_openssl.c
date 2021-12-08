@@ -13,6 +13,11 @@ Abstract:
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "platform_internal.h"
+#ifdef _WIN32
+#pragma warning(push)
+#pragma warning(disable:4100) // Unreferenced parameter errcode in inline function
+#endif
+
 #include "openssl/ssl.h"
 #include "openssl/err.h"
 #include "openssl/kdf.h"
@@ -20,6 +25,13 @@ Abstract:
 #include "openssl/rsa.h"
 #include "openssl/x509.h"
 #include "openssl/pem.h"
+
+#ifdef _WIN32
+#pragma warning(pop)
+#endif
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 //
 // Generates a self signed cert using low level OpenSSL APIs.
@@ -273,10 +285,22 @@ typedef struct QUIC_CREDENTIAL_CONFIG_INTERNAL {
 _IRQL_requires_max_(PASSIVE_LEVEL)
 const QUIC_CREDENTIAL_CONFIG*
 QuicPlatGetSelfSignedCert(
-    _In_ QUIC_SELF_SIGN_CERT_TYPE Type
+    _In_ QUIC_SELF_SIGN_CERT_TYPE Type,
+	_In_ BOOLEAN ClientCertificate
     )
 {
     UNREFERENCED_PARAMETER(Type);
+    UNREFERENCED_PARAMETER(ClientCertificate);
+	
+    if (ClientCertificate) {
+        //
+        //Client certificate is not supported on OpenSSL (yet)
+        //               
+        QuicTraceLogInfo(
+            "[ lib] ERROR, %s.",
+            "Client Certificate is not supported in OpenSSL");
+        return NULL;
+    }
 
     QUIC_CREDENTIAL_CONFIG_INTERNAL* Params =
         malloc(sizeof(QUIC_CREDENTIAL_CONFIG_INTERNAL) + sizeof(TEMP_DIR_TEMPLATE));
@@ -385,22 +409,63 @@ Error:
     return NULL;
 }
 
+_Success_(return == TRUE)
+BOOLEAN
+QuicGetTestCertificate(
+    _In_ QUIC_TEST_CERT_TYPE Type,
+    _In_ QUIC_SELF_SIGN_CERT_TYPE StoreType,
+    _In_ uint32_t CredType,
+    _Out_ QUIC_CREDENTIAL_CONFIG* Params,
+    _When_(CredType == QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH, _Out_)
+    _When_(CredType != QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH, _Reserved_)
+        QUIC_CERTIFICATE_HASH* CertHash,
+    _When_(CredType == QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH_STORE, _Out_)
+    _When_(CredType != QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH_STORE, _Reserved_)
+        QUIC_CERTIFICATE_HASH_STORE* CertHashStore,
+    _When_(CredType == QUIC_CREDENTIAL_TYPE_NONE, _Out_z_bytecap_(100))
+    _When_(CredType != QUIC_CREDENTIAL_TYPE_NONE, _Reserved_)
+        char Principal[100]
+    )
+{
+    UNREFERENCED_PARAMETER(Type);
+    UNREFERENCED_PARAMETER(StoreType);
+    UNREFERENCED_PARAMETER(CredType);
+    UNREFERENCED_PARAMETER(Params);
+    UNREFERENCED_PARAMETER(CertHash);
+    UNREFERENCED_PARAMETER(CertHashStore);
+    UNREFERENCED_PARAMETER(Principal);
+    return FALSE;
+}
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicFreeTestCert(
+    _In_ QUIC_CREDENTIAL_CONFIG* Params
+    )
+{
+    UNREFERENCED_PARAMETER(Params);
+}
+
+
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicPlatFreeSelfSignedCert(
-    _In_ const QUIC_CREDENTIAL_CONFIG* _Params
+    _In_ const QUIC_CREDENTIAL_CONFIG* CredConfig
     )
 {
     QUIC_CREDENTIAL_CONFIG_INTERNAL* Params =
-        (QUIC_CREDENTIAL_CONFIG_INTERNAL*)_Params;
+        (QUIC_CREDENTIAL_CONFIG_INTERNAL*)CredConfig;
 
 #ifdef _WIN32
     DeleteFileA(Params->CertFilepath);
     DeleteFileA(Params->PrivateKeyFilepath);
+#elif TARGET_OS_IOS
+    UNREFERENCED_PARAMETER(CredConfig);
+    UNREFERENCED_PARAMETER(Params);
 #else
     char RmCmd[32] = {0};
     strncpy(RmCmd, "rm -rf ", 7 + 1);
-    strcat(RmCmd, Params->TempDir);
+    strncat(RmCmd, Params->TempDir, sizeof(RmCmd) - strlen(RmCmd) -1);
     if (system(RmCmd) == -1) {
         QuicTraceLogError(
             "LibraryError: [lib] ERROR, %s.",

@@ -20,11 +20,11 @@ uint16_t Port = 443;
 const char* ServerName = "localhost";
 const char* ServerIp = nullptr;
 QUIC_ADDR ServerAddress = {0};
-std::vector<const char*> ALPNs(
-    { "h3-27", "h3-28", "h3-29", "h3-30", "h3-31",
-      "hq-27", "hq-28", "hq-29", "hq-30", "hq-31",
-      "smb" });
+
+std::vector<const char*> ALPNs({ "h3", "h3-29", "hq-interop", "hq-29", "smb" });
+
 const char* InputAlpn = nullptr;
+uint32_t InputVersion = 0;
 
 const QUIC_API_TABLE* MsQuic;
 HQUIC Registration;
@@ -33,6 +33,7 @@ extern "C" void QuicTraceRundown(void) { }
 
 struct ConnectionContext {
     bool GotConnected;
+    uint32_t QuicVersion;
     QUIC_EVENT Complete;
 };
 
@@ -46,11 +47,14 @@ ConnectionHandler(
     _Inout_ QUIC_CONNECTION_EVENT* Event
     )
 {
+	uint32_t Size = 0;
     auto Context = (ConnectionContext*)_Context;
     switch (Event->Type) {
     case QUIC_CONNECTION_EVENT_CONNECTED:
         Context->GotConnected = true;
         MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+        Size = sizeof(Context->QuicVersion);
+        MsQuic->GetParam(Connection, QUIC_PARAM_LEVEL_CONNECTION, QUIC_PARAM_CONN_QUIC_VERSION, &Size, &Context->QuicVersion);
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
         MsQuic->ConnectionClose(Connection);
@@ -75,6 +79,12 @@ QUIC_THREAD_CALLBACK(TestReachability, _Alpn)
     Settings.IsSet.PeerUnidiStreamCount = TRUE;
     Settings.IdleTimeoutMs = 10 * 1000;
     Settings.IsSet.IdleTimeoutMs = TRUE;
+
+    if (InputVersion) {
+        Settings.IsSet.DesiredVersionsList = TRUE;
+        Settings.DesiredVersionsList = &InputVersion;
+        Settings.DesiredVersionsListLength = 1;
+    }
 
     HQUIC Configuration = nullptr;
     if (QUIC_FAILED(MsQuic->ConfigurationOpen(Registration, &Alpn, 1, &Settings, sizeof(Settings), nullptr, &Configuration))) {
@@ -135,7 +145,7 @@ main(int argc, char **argv)
             !strcmp(argv[1], "/?") ||
             !strcmp(argv[1], "help")
         )) {
-        printf("Usage: quicreach.exe [-server:<name>] [-ip:<ip>] [-port:<number>] [-alpn:<alpn>]\n");
+        printf("Usage: quicreach.exe [-server:<name>] [-ip:<ip>] [-port:<number>] [-alpn:<alpn>] [-version:<quic_version>]\n");
         exit(1);
     }
 
@@ -143,6 +153,8 @@ main(int argc, char **argv)
     TryGetValue(argc, argv, "ip", &ServerIp);
     TryGetValue(argc, argv, "port", &Port);
     TryGetValue(argc, argv, "alpn", &InputAlpn);
+    TryGetValue(argc, argv, "version", &InputVersion);
+
 
     QuicPlatformSystemLoad();
     QuicPlatformInitialize();
@@ -152,8 +164,8 @@ main(int argc, char **argv)
         if (QUIC_FAILED(
             QuicDataPathInitialize(
                 0,
-                (QUIC_DATAPATH_RECEIVE_CALLBACK_HANDLER)(1),
-                (QUIC_DATAPATH_UNREACHABLE_CALLBACK_HANDLER)(1),
+                NULL,
+                NULL,
                 &Datapath))) {
             printf("QuicDataPathInitialize failed.\n");
             exit(1);

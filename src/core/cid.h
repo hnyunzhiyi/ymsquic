@@ -134,18 +134,47 @@ typedef struct QUIC_CID {
 
 } QUIC_CID;
 
-typedef struct QUIC_CID_QUIC_LIST_ENTRY {
+typedef struct QUIC_CID_LIST_ENTRY {
 
     QUIC_LIST_ENTRY Link;
     uint8_t ResetToken[QUIC_STATELESS_RESET_TOKEN_LENGTH];
-    QUIC_CID CID;
+#ifdef DEBUG
+    QUIC_PATH* AssignedPath;
+#endif
+	QUIC_CID CID;
 
-} QUIC_CID_QUIC_LIST_ENTRY;
+} QUIC_CID_LIST_ENTRY;
+
+
+#if DEBUG
+#define QUIC_CID_SET_PATH(Conn, Cid, Path)                                      \
+    do {                                                                        \
+        QUIC_DBG_ASSERT(Cid->AssignedPath == NULL); Cid->AssignedPath = Path; \
+        for (uint8_t PathIdx = Conn->PathsCount - 1; PathIdx > 0; PathIdx--) {  \
+            if (Path != &Conn->Paths[PathIdx])                                  \
+                QUIC_DBG_ASSERT(Conn->Paths[PathIdx].DestCid != Cid);         \
+            }                                                                   \
+        }                                                                       \
+    while (0)
+#define QUIC_CID_CLEAR_PATH(Cid) Cid->AssignedPath = NULL
+#define QUIC_CID_VALIDATE_NULL(Conn, Cid)                                       \
+    do {                                                                        \
+        QUIC_DBG_ASSERT(Cid->AssignedPath == NULL);                           \
+        for (uint8_t PathIdx = Conn->PathsCount - 1; PathIdx > 0; PathIdx--) {  \
+            QUIC_DBG_ASSERT(Conn->Paths[PathIdx].DestCid != Cid);             \
+        }                                                                       \
+    } while (0)
+#else
+#define QUIC_CID_SET_PATH(Conn, Cid, Path) UNREFERENCED_PARAMETER(Cid)
+#define QUIC_CID_CLEAR_PATH(Cid) UNREFERENCED_PARAMETER(Cid)
+#define QUIC_CID_VALIDATE_NULL(Conn, Cid) UNREFERENCED_PARAMETER(Cid)
+#endif
+
 
 typedef struct QUIC_CID_HASH_ENTRY {
 
     QUIC_HASHTABLE_ENTRY Entry;
-    QUIC_SINGLE_LIST_ENTRY Link;
+    QUIC_SLIST_ENTRY Link;
     QUIC_CONNECTION* Connection;
     QUIC_CID CID;
 
@@ -210,17 +239,18 @@ QuicCidNewSource(
 //
 inline
 _Success_(return != NULL)
-QUIC_CID_QUIC_LIST_ENTRY*
+QUIC_CID_LIST_ENTRY*
 QuicCidNewRandomDestination(
     )
 {
-    QUIC_CID_QUIC_LIST_ENTRY* Entry =
-        (QUIC_CID_QUIC_LIST_ENTRY*)
+    QUIC_CID_LIST_ENTRY* Entry =
+        (QUIC_CID_LIST_ENTRY*)
         QUIC_ALLOC_NONPAGED(
-            sizeof(QUIC_CID_QUIC_LIST_ENTRY) +
+            sizeof(QUIC_CID_LIST_ENTRY) +
             QUIC_MIN_INITIAL_CONNECTION_ID_LENGTH);
 
     if (Entry != NULL) {
+        QUIC_CID_CLEAR_PATH(Entry);
         QuicZeroMemory(&Entry->CID, sizeof(Entry->CID));
         Entry->CID.Length = QUIC_MIN_INITIAL_CONNECTION_ID_LENGTH;
         QuicRandom(QUIC_MIN_INITIAL_CONNECTION_ID_LENGTH, Entry->CID.Data);
@@ -234,20 +264,21 @@ QuicCidNewRandomDestination(
 //
 inline
 _Success_(return != NULL)
-QUIC_CID_QUIC_LIST_ENTRY*
+QUIC_CID_LIST_ENTRY*
 QuicCidNewDestination(
     _In_ uint8_t Length,
     _In_reads_(Length)
         const uint8_t* const Data
     )
 {
-    QUIC_CID_QUIC_LIST_ENTRY* Entry =
-        (QUIC_CID_QUIC_LIST_ENTRY*)
+    QUIC_CID_LIST_ENTRY* Entry =
+        (QUIC_CID_LIST_ENTRY*)
         QUIC_ALLOC_NONPAGED(
-            sizeof(QUIC_CID_QUIC_LIST_ENTRY) +
+            sizeof(QUIC_CID_LIST_ENTRY) +
             Length);
 
     if (Entry != NULL) {
+        QUIC_CID_CLEAR_PATH(Entry);
         QuicZeroMemory(&Entry->CID, sizeof(Entry->CID));
         Entry->CID.Length = Length;
         if (Length != 0) {

@@ -25,7 +25,7 @@ QuicPathInitialize(
     QuicZeroMemory(Path, sizeof(QUIC_PATH));
     Path->ID = Connection->NextPathId++; // TODO - Check for duplicates after wrap around?
     Path->MinRtt = UINT32_MAX;
-    Path->Mtu = QUIC_DEFAULT_PATH_MTU;
+    Path->Mtu = Connection->Settings.MinimumMtu;
     Path->SmoothedRtt = MS_TO_US(Connection->Settings.InitialRttMs);
     Path->RttVariance = Path->SmoothedRtt / 2;
 
@@ -42,6 +42,12 @@ QuicPathRemove(
     QUIC_DBG_ASSERT(Index < Connection->PathsCount);
     const QUIC_PATH* Path = &Connection->Paths[Index];
     QuicTraceLogConnInfo("PathRemoved: Path[%hhu] Removed", Path->ID);
+
+#if DEBUG
+    if (Path->DestCid) {
+        QUIC_CID_CLEAR_PATH(Path->DestCid);
+    }
+#endif
 
     if (Index + 1 < Connection->PathsCount) {
         QuicMoveMemory(
@@ -61,28 +67,28 @@ QuicPathSetAllowance(
     _In_ uint32_t NewAllowance
     )
 {
-    BOOLEAN WasBlocked = Path->Allowance < QUIC_MIN_SEND_ALLOWANCE;
     Path->Allowance = NewAllowance;
+    BOOLEAN IsBlocked = Path->Allowance < QUIC_MIN_SEND_ALLOWANCE;
 
-    if (!Path->IsPeerValidated &&
-        (Path->Allowance < QUIC_MIN_SEND_ALLOWANCE) != WasBlocked) {
-        if (WasBlocked) {
-            QuicConnRemoveOutFlowBlockedReason(
-                Connection, QUIC_FLOW_BLOCKED_AMPLIFICATION_PROT);
-            if (Connection->Send.SendFlags != 0) {
-                //
-                // We were blocked by amplification protection (no allowance
-                // left) and we have stuff to send, so flush the send now.
-                //
-                QuicSendQueueFlush(&Connection->Send, REASON_AMP_PROTECTION);
-            }
-            //
-            // Now that we are no longer blocked by amplification protection
-            // we need to re-enable the loss detection timers. This call may
-            // even cause the loss timer to fire (be queued) immediately
-            // because packets were already lost, but we didn't know it.
-            //
-            QuicLossDetectionUpdateTimer(&Connection->LossDetection);
+    if (!Path->IsPeerValidated) {
+        if (IsBlocked) {
+           if ( QuicConnRemoveOutFlowBlockedReason(
+                Connection, QUIC_FLOW_BLOCKED_AMPLIFICATION_PROT)) {
+            	if (Connection->Send.SendFlags != 0) {
+                	//
+                	// We were blocked by amplification protection (no allowance
+                	// left) and we have stuff to send, so flush the send now.
+                	//
+                	QuicSendQueueFlush(&Connection->Send, REASON_AMP_PROTECTION);
+            	}
+            	//
+            	// Now that we are no longer blocked by amplification protection
+            	// we need to re-enable the loss detection timers. This call may
+            	// even cause the loss timer to fire (be queued) immediately
+            	// because packets were already lost, but we didn't know it.
+            	//
+            	QuicLossDetectionUpdateTimer(&Connection->LossDetection, TRUE);
+			}
         } else {
             QuicConnAddOutFlowBlockedReason(
                 Connection, QUIC_FLOW_BLOCKED_AMPLIFICATION_PROT);
@@ -116,25 +122,29 @@ QuicPathSetValid(
     Path->IsPeerValidated = TRUE;
     QuicPathSetAllowance(Connection, Path, UINT32_MAX);
 
-    if (Path->IsPeerValidated && Reason == QUIC_PATH_VALID_PATH_RESPONSE) {
+    if (Reason == QUIC_PATH_VALID_PATH_RESPONSE) {
         //
-        // If the active path was just validated, then let's queue up a PMTUD
-        // packet.
-        //
-        QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_PMTUD);
+        //If the active path was just validated, then let's queue up DPLPMTUD.
+        //This will force validate min mtu if it has not already been
+        //validated.
+        //                             
+        QuicMtuDiscoveryPeerValidated(&Path->MtuDiscovery, Connection);
     }
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 _Ret_maybenull_
+_Success_(return != NULL)
 QUIC_PATH*
 QuicConnGetPathByID(
     _In_ QUIC_CONNECTION* Connection,
-    _In_ uint8_t ID
+    _In_ uint8_t ID,
+	_Out_ uint8_t* Index
     )
 {
     for (uint8_t i = 0; i < Connection->PathsCount; ++i) {
         if (Connection->Paths[i].ID == ID) {
+			*Index = i;
             return &Connection->Paths[i];
         }
     }
@@ -146,7 +156,7 @@ _Ret_maybenull_
 QUIC_PATH*
 QuicConnGetPathForDatagram(
     _In_ QUIC_CONNECTION* Connection,
-    _In_ const QUIC_RECV_DATAGRAM* Datagram
+    _In_ const QUIC_RECV_DATA* Datagram
     )
 {
     for (uint8_t i = 0; i < Connection->PathsCount; ++i) {
@@ -169,9 +179,27 @@ QuicConnGetPathForDatagram(
 
     if (Connection->PathsCount == QUIC_MAX_PATH_COUNT) {
         //
-        // Already tracking the maximum number of paths.
-        //
-        return NULL;
+        //See if any old paths share the same remote address, and is just a rebind.
+        //If so, remove the old paths.
+        //NB: Traversing the array backwards is simpler and more efficient here due
+        //to the array shifting that happens in QuicPathRemove.
+        //                                   
+        for (uint8_t i = Connection->PathsCount - 1; i > 0; i--) {
+            if (!Connection->Paths[i].IsActive
+                && QuicAddrGetFamily(&Datagram->Tuple->RemoteAddress) == QuicAddrGetFamily(&Connection->Paths[i].RemoteAddress)
+                && QuicAddrCompareIp(&Datagram->Tuple->RemoteAddress, &Connection->Paths[i].RemoteAddress)
+                && QuicAddrCompare(&Datagram->Tuple->LocalAddress, &Connection->Paths[i].LocalAddress)) {
+                QuicPathRemove(Connection, i);
+            }
+        }
+
+        if (Connection->PathsCount == QUIC_MAX_PATH_COUNT) {
+            //
+            //Already tracking the maximum number of paths, and can't free
+            //any more.
+            //                                  
+			return NULL;
+		}
     }
 
     if (Connection->PathsCount > 1) {
@@ -188,10 +216,13 @@ QuicConnGetPathForDatagram(
     QuicPathInitialize(Connection, Path);
     Connection->PathsCount++;
 
-    Path->DestCid = Connection->Paths[0].DestCid;
+	if (Connection->Paths[0].DestCid->CID.Length == 0) {
+    	Path->DestCid = Connection->Paths[0].DestCid; //TODO -Copy instead?
+	}
     Path->Binding = Connection->Paths[0].Binding;
     Path->LocalAddress = Datagram->Tuple->LocalAddress;
     Path->RemoteAddress = Datagram->Tuple->RemoteAddress;
+    QuicPathValidate(Path);
 
     return Path;
 }
@@ -208,6 +239,7 @@ QuicPathSetActive(
         QUIC_DBG_ASSERT(!Path->IsActive);
         Path->IsActive = TRUE;
     } else {
+		QUIC_DBG_ASSERT(Path->DestCid != NULL);
         UdpPortChangeOnly =
             QuicAddrGetFamily(&Path->RemoteAddress) == QuicAddrGetFamily(&Connection->Paths[0].RemoteAddress) &&
             QuicAddrCompareIp(&Path->RemoteAddress, &Connection->Paths[0].RemoteAddress);
@@ -216,6 +248,12 @@ QuicPathSetActive(
 
         PrevActivePath.IsActive = FALSE;
         Path->IsActive = TRUE;
+		if (UdpPortChangeOnly) {
+            //
+            //We assume port only changes don't change the PMTU.
+            //                       
+			Path->IsMinMtuValidated = PrevActivePath.IsMinMtuValidated;
+		}
 
         Connection->Paths[0] = *Path;
         *Path = PrevActivePath;

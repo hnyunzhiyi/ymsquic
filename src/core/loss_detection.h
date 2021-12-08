@@ -100,7 +100,8 @@ QuicLossDetectionOnZeroRttRejected(
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicLossDetectionUpdateTimer(
-    _In_ QUIC_LOSS_DETECTION* LossDetection
+    _In_ QUIC_LOSS_DETECTION* LossDetection,
+	_In_ BOOLEAN ExecuteImmediatelyIfNecessary
     );
 
 //
@@ -118,7 +119,7 @@ QuicLossDetectionComputeProbeTimeout(
 // Called when a new packet is sent.
 //
 _IRQL_requires_max_(PASSIVE_LEVEL)
-QUIC_STATUS
+void
 QuicLossDetectionOnPacketSent(
     _In_ QUIC_LOSS_DETECTION* LossDetection,
     _In_ QUIC_PATH* Path,
@@ -152,3 +153,5 @@ void
 QuicLossDetectionProcessTimerOperation(
     _In_ QUIC_LOSS_DETECTION* LossDetection
     );
+
+

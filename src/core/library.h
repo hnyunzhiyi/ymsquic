@@ -56,7 +56,13 @@ typedef struct QUIC_CACHEALIGN QUIC_LIBRARY_PP {
     //
     QUIC_POOL PacketSpacePool;
 
+
     //
+    //   Used for generating stateless reset hashes.
+    //        
+	QUIC_HASH* ResetTokenHash;
+    QUIC_LOCK ResetTokenLock;
+
     // Per-processor performance counters.
     //
     int64_t PerfCounters[QUIC_PERF_COUNTER_MAX];
@@ -88,9 +94,19 @@ typedef struct QUIC_LIBRARY {
     BOOLEAN InUse;
 
     //
+    //Indicates if the stateless retry feature is currently enabled.
+    //        
+    BOOLEAN SendRetryEnabled;
+
+    //
     // Index for the current stateless retry token key.
     //
     BOOLEAN CurrentStatelessRetryKey;
+
+    //
+    //Current binary version.
+    //       
+    uint32_t Version[4];
 
     //
     // Configurable (app & registry) settings.
@@ -108,9 +124,15 @@ typedef struct QUIC_LIBRARY {
     QUIC_DISPATCH_LOCK DatapathLock;
 
     //
-    // Total outstanding references on the library.
+    //Total outstanding references from calls to MsQuicLoadLibrary.
+    //        
+    volatile short LoadRefCount;
+
     //
-    uint32_t RefCount;
+    //Total outstanding references from calls to MsQuicOpen.
+    //       
+    uint16_t OpenRefCount;
+
 
     //
     // Number of processors currently being used.
@@ -154,6 +176,12 @@ typedef struct QUIC_LIBRARY {
     // An identifier used for correlating connection logs and statistics.
     //
     uint64_t ConnectionCorrelationId;
+
+    //
+    //The maximum total memory usage for handshake connections before the retry
+    //feature gets enabled.
+    //            
+    uint64_t HandshakeMemoryLimit;
 
     //
     // The estiamted current total memory usage for handshake connections.
@@ -217,6 +245,20 @@ typedef struct QUIC_LIBRARY {
     //
     QUIC_TEST_DATAPATH_HOOKS* TestDatapathHooks;
 #endif
+
+    //
+    //Default client compatibility list. Use for connections that don't
+    //specify a custom list. Generated for QUIC_VERSION_LATEST
+    //           
+    const uint32_t* DefaultCompatibilityList;
+    uint32_t DefaultCompatibilityListLength;
+
+    //
+    //Last sample of the performance counters
+    //        
+    uint64_t PerfCounterSamplesTime;
+    int64_t PerfCounterSamples[QUIC_PERF_COUNTER_MAX];
+
 
 } QUIC_LIBRARY;
 
@@ -307,7 +349,7 @@ QuicPerfCounterAdd(
     _In_ int64_t Value
     )
 {
-    QUIC_DBG_ASSERT(Type < QUIC_PERF_COUNTER_MAX);
+    QUIC_DBG_ASSERT(Type >= 0 && Type < QUIC_PERF_COUNTER_MAX);
     uint32_t ProcIndex = QuicProcCurrentNumber();
     QUIC_DBG_ASSERT(ProcIndex < (uint32_t)MsQuicLib.PartitionCount);
     InterlockedExchangeAdd64(&(MsQuicLib.PerProc[ProcIndex].PerfCounters[Type]), Value);
@@ -315,6 +357,39 @@ QuicPerfCounterAdd(
 
 #define QuicPerfCounterIncrement(Type) QuicPerfCounterAdd(Type, 1)
 #define QuicPerfCounterDecrement(Type) QuicPerfCounterAdd(Type, -1)
+
+#define QUIC_PERF_SAMPLE_INTERVAL_S    30 // 30 seconds
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicPerfCounterSnapShot(
+    _In_ uint64_t TimeDiffUs
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+inline
+void
+QuicPerfCounterTrySnapShot(
+    _In_ uint64_t TimeNow
+    )
+{
+    uint64_t TimeLast = MsQuicLib.PerfCounterSamplesTime;
+    uint64_t TimeDiff = QuicTimeDiff64(TimeLast, TimeNow);
+    if (TimeDiff < S_TO_US(QUIC_PERF_SAMPLE_INTERVAL_S)) {
+        return; // Not time to resample yet.
+    }
+
+    if ((int64_t)TimeLast !=
+        InterlockedCompareExchange64(
+            (int64_t*)&MsQuicLib.PerfCounterSamplesTime,
+            (int64_t)TimeNow,
+            (int64_t)TimeLast)) {
+        return; // Someone else already is updating.
+    }
+
+    QuicPerfCounterSnapShot(TimeDiff);
+}
+
 
 //
 // Creates a random, new source connection ID, that will be used on the receive
@@ -417,13 +492,7 @@ QuicLibraryGetParam(
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QuicLibraryGetBinding(
-#ifdef QUIC_COMPARTMENT_ID
-    _In_ QUIC_COMPARTMENT_ID CompartmentId,
-#endif
-    _In_ BOOLEAN ShareBinding,
-    _In_ BOOLEAN ServerOwned,
-    _In_opt_ const QUIC_ADDR * LocalAddress,
-    _In_opt_ const QUIC_ADDR * RemoteAddress,
+    _In_ const QUIC_UDP_CONFIG* UdpConfig,
     _Out_ QUIC_BINDING** NewBinding
     );
 
@@ -464,7 +533,7 @@ QuicLibraryOnListenerRegistered(
 _IRQL_requires_max_(DISPATCH_LEVEL)
 QUIC_WORKER*
 QuicLibraryGetWorker(
-    _In_ const _In_ QUIC_RECV_DATAGRAM* Datagram
+    _In_ const _In_ QUIC_RECV_DATA* Datagram
     );
 
 //
@@ -486,3 +555,34 @@ QUIC_KEY*
 QuicLibraryGetStatelessRetryKeyForTimestamp(
     _In_ int64_t Timestamp
     );
+
+//
+// Called when a new (server) connection is added in the handshake state.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicLibraryOnHandshakeConnectionAdded(
+    void
+    );
+
+//
+// Called when a connection leaves the handshake state.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicLibraryOnHandshakeConnectionRemoved(
+    void
+    );
+
+//
+// Generates a stateless reset token for the given connection ID.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QuicLibraryGenerateStatelessResetToken(
+    _In_reads_(MsQuicLib.CidTotalLength)
+        const uint8_t* const CID,
+    _Out_writes_all_(QUIC_STATELESS_RESET_TOKEN_LENGTH)
+        uint8_t* ResetToken
+    );
+

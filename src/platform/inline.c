@@ -69,13 +69,13 @@ QuicListMoveItems(
 
 void
 QuicListPushEntry(
-    _Inout_ QUIC_SINGLE_LIST_ENTRY* ListHead,
-    _Inout_ __drv_aliasesMem QUIC_SINGLE_LIST_ENTRY* Entry
+    _Inout_ QUIC_SLIST_ENTRY* ListHead,
+    _Inout_ __drv_aliasesMem QUIC_SLIST_ENTRY* Entry
     );
 
-QUIC_SINGLE_LIST_ENTRY*
+QUIC_SLIST_ENTRY*
 QuicListPopEntry(
-    _Inout_ QUIC_SINGLE_LIST_ENTRY* ListHead
+    _Inout_ QUIC_SLIST_ENTRY* ListHead
     );
 
 long

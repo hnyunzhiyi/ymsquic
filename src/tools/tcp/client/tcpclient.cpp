@@ -8,9 +8,9 @@ int main(int argc, char *argv[])
     char Addr[32];
 	int  State = 0;
 	uint8_t data[200];
-	uint32_t Result = 0;	
+	uint32_t Result = 0, z = 10000;	
 	QUIC_BUFFER SendBuffer;
-	const QUIC_BUFFER Alpn = { sizeof("ip") - 1, (uint8_t*)"ip" };
+
 	struct sockaddr_in PeerAddr, LocalAddr;
 
 	if (GetValue(argc, argv, "?") || GetValue(argc, argv, "help")) {
@@ -20,70 +20,59 @@ int main(int argc, char *argv[])
     }
 
 	const char* Target = "quic.westus.cloudapp.azure.com";
-	const char* Port = "4433";
+	uint16_t Port = 4433;
 	
     TryGetValue(argc, argv, "target", &Target);
     TryGetValue(argc, argv, "port", &Port);
 		
-	memset(&Context, 0, sizeof(QUIC_SOCKFD));
+	QuicZeroMemory(&Context, sizeof(QUIC_SOCKFD));
 	if (QUIC_FAILED(MsQuicOpen(&(Context.MsQuic))))
     {
         printf("MsQuicOpen failed\n");
         return -1;
     }
-	
 	const QUIC_API_TABLE* MsQuic = Context.MsQuic;
-	CHANNEL_DATA* MainChannel = (CHANNEL_DATA*)MsQuic->TcpSocket(PF_INET, SOCK_STREAM, 0, &Context);
-
-	if (QUIC_FAILED(MsQuic->TcpConnect(MainChannel, Target, atoi(Port))))
+	CHANNEL_DATA* MChannel = (CHANNEL_DATA*)MsQuic->TcpSocket(PF_INET, SOCK_STREAM, 0, &Context);
+	
+	if (QUIC_FAILED(MsQuic->TcpConnect(MChannel, Target, Port)))
 	{
 		printf("Client Connect failed\n");
 		State = -1;
 		goto End;
 	}
+	
+	while(z--) {	
+		for(int j = 0; j<100; j++)
+		{
+			data[j] = j;
+		}
 
-	if (MsQuic->MsQuicGetPeerName(MainChannel, (struct sockaddr*)&PeerAddr, NULL) < 0)
-	{
-		printf("Call MsQuicGetPeerName failed\n");
-		goto End;
-	}
+		SendBuffer.Length = sizeof(uint8_t)*100;
+		SendBuffer.Buffer = data;			
+		if (QUIC_FAILED(MsQuic->TcpSend(MChannel, &SendBuffer)))
+		{
+			printf("Client Send failed\n");
+			State = -1;
+			goto End;
+		}
+		QuicZeroMemory(data, sizeof(data));
 
-    if (MsQuic->MsQuicGetSockName(MainChannel, (struct sockaddr*)&LocalAddr, NULL) < 0)
-    {
-       	printf("Call MsQuicGetPeerName failed\n");
-        goto End;
-    }
-		
-	for(int j = 0; j<100; j++)
-	{
-		data[j] = j;
-	}
+		Result = MsQuic->TcpRecv(MChannel, data, sizeof(uint8_t)*200, &State);
+		if (!Result && State)
+		{
+			State = -1;
+			goto End;
+		}
 
-	SendBuffer.Length = sizeof(uint8_t)*100;
-	SendBuffer.Buffer = data;			
-	if (QUIC_FAILED(MsQuic->TcpSend(MainChannel, &SendBuffer)))
-	{
-		printf("Client Send failed\n");
-		State = -1;
-		goto End;
-	}
-		
-	memset(data, 0, sizeof(data));	
-	Result = MsQuic->TcpRecv(MainChannel, data, sizeof(uint8_t)*200, &State);
-	if (!Result && State)
-	{
-		State = -1;
-		goto End;
-	}
-
-	for (uint32_t i=0; i<Result; i++)
-	{
-		printf("Client:%u ", data[i]);
+		for (uint32_t i=0; i<Result; i++)
+		{
+			printf("Client:%u ", data[i]);
+		}
 	}
 	printf("\n");
 
 End:	
-	MsQuic->TcpClose(MainChannel);
+	MsQuic->TcpClose(MChannel);
 	return State;
 }
  

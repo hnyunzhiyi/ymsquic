@@ -50,6 +50,14 @@ typedef struct QUIC_CONFIGURATION {
     //
     QUIC_STORAGE* Storage; // Only necessary if it could be in a different silo.
 #endif
+
+#ifdef QUIC_OWNING_PROCESS
+    //
+    //The process token of the owning process
+    //       
+    QUIC_PROCESS OwningProcess;
+#endif
+
     QUIC_STORAGE* AppSpecificStorage;
 
     //

@@ -100,7 +100,12 @@ QuicSendCanSendFlagsNow(
 {
     QUIC_CONNECTION* Connection = QuicSendGetConnection(Send);
     if (Connection->Crypto.TlsState.WriteKey < QUIC_PACKET_KEY_1_RTT) {
-        if ((!Connection->State.Started && !QuicConnIsServer(Connection)) ||
+        if (Connection->Crypto.TlsState.WriteKeys[QUIC_PACKET_KEY_0_RTT] != NULL &&
+            QuicListIsEmpty(&Send->SendStreams)) {
+            return TRUE;
+        }
+
+        if ((!Connection->State.Started && QuicConnIsClient(Connection)) ||
             !(Send->SendFlags & QUIC_CONN_SEND_FLAG_ALLOWED_HANDSHAKE)) {
             return FALSE;
         }
@@ -134,7 +139,8 @@ void
 QuicSendQueueFlushForStream(
     _In_ QUIC_SEND* Send,
     _In_ QUIC_STREAM* Stream,
-    _In_ BOOLEAN WasPreviouslyQueued
+    _In_ BOOLEAN WasPreviouslyQueued,
+	_In_ BOOLEAN DelaySend
     )
 {
     if (!WasPreviouslyQueued) {
@@ -142,18 +148,64 @@ QuicSendQueueFlushForStream(
         // Not previously queued, so add the stream to the end of the queue.
         //
         QUIC_DBG_ASSERT(Stream->SendLink.Flink == NULL);
-        QuicListInsertTail(&Send->SendStreams, &Stream->SendLink);
+        QUIC_LIST_ENTRY* Entry = Send->SendStreams.Blink;
+        while (Entry != &Send->SendStreams) {
+            //
+            //Search back to front for the right place (based on priority) to
+            //insert the stream.
+            //                    
+            if (Stream->SendPriority <=
+                QUIC_CONTAINING_RECORD(Entry, QUIC_STREAM, SendLink)->SendPriority) {
+                break;
+            }
+            Entry = Entry->Blink;
+        }
+        QuicListInsertHead(Entry, &Stream->SendLink);   // Insert after current Entry
         QuicStreamAddRef(Stream, QUIC_STREAM_REF_SEND);
     }
 
-    if (Stream->Connection->State.Started) {
+    //
+    //TODO - If send was delayed by the app, under what conditions should we
+    //ignore that signal and queue anyways?
+    //         
+    if (DelaySend) {
+        Stream->Flags.SendDelayed = TRUE;
+
+	} else if (Stream->Connection->State.Started) {
         //
         // Schedule the flush even if we didn't just queue the stream,
         // because it may have been previously blocked.
         //
+        Stream->Flags.SendDelayed = FALSE;
         QuicSendQueueFlush(Send, REASON_STREAM_FLAGS);
     }
 }
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicSendUpdateStreamPriority(
+    _In_ QUIC_SEND* Send,
+    _In_ QUIC_STREAM* Stream
+    )
+{
+    QUIC_DBG_ASSERT(Stream->SendLink.Flink != NULL);
+    QuicListEntryRemove(&Stream->SendLink);
+
+    QUIC_LIST_ENTRY* Entry = Send->SendStreams.Blink;
+    while (Entry != &Send->SendStreams) {
+        //
+        //Search back to front for the right place (based on priority) to
+        //insert the stream.
+        //                      
+        if (Stream->SendPriority <=
+            QUIC_CONTAINING_RECORD(Entry, QUIC_STREAM, SendLink)->SendPriority) {
+            break;
+        }
+        Entry = Entry->Blink;
+    }
+    QuicListInsertHead(Entry, &Stream->SendLink); // Insert after current Entry
+}
+
 
 #if DEBUG
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -302,7 +354,8 @@ BOOLEAN
 QuicSendSetStreamSendFlag(
     _In_ QUIC_SEND* Send,
     _In_ QUIC_STREAM* Stream,
-    _In_ uint32_t SendFlags
+    _In_ uint32_t SendFlags,
+	_In_ BOOLEAN DelaySend
     )
 {
     QUIC_CONNECTION* Connection = QuicSendGetConnection(Send);
@@ -336,20 +389,20 @@ QuicSendSetStreamSendFlag(
         SendFlags &= ~QUIC_STREAM_SEND_FLAG_MAX_DATA;
     }
 
-    if ((Stream->SendFlags | SendFlags) != Stream->SendFlags) {
+    if ((Stream->SendFlags | SendFlags) != Stream->SendFlags || 
+		(Stream->Flags.SendDelayed && (SendFlags & QUIC_STREAM_SEND_FLAG_DATA))) {
 
         QuicTraceLogStreamVerbose(
             "SetSendFlag: Setting flags 0x%x (existing flags: 0x%x)",
             (SendFlags & (uint32_t)(~Stream->SendFlags)),
             Stream->SendFlags);
 
-        if (Stream->Flags.Started &&
-            (Stream->SendFlags & SendFlags) != SendFlags) {
+        if (Stream->Flags.Started) {
             //
             // Since this is new data for a started stream, we need to queue
             // up the send to flush the stream data.
             //
-            QuicSendQueueFlushForStream(Send, Stream, Stream->SendFlags != 0);
+            QuicSendQueueFlushForStream(Send, Stream, Stream->SendFlags != 0, DelaySend);
         }
         Stream->SendFlags |= SendFlags;
     }
@@ -431,8 +484,7 @@ QuicSendWriteFrames(
     }
 
     if (!IsCongestionControlBlocked &&
-        Send->SendFlags & QUIC_CONN_SEND_FLAG_CRYPTO &&
-        Builder->PacketType == QuicEncryptLevelToPacketType(QuicCryptoGetNextEncryptLevel(&Connection->Crypto))) {
+        Send->SendFlags & QUIC_CONN_SEND_FLAG_CRYPTO) {
         if (QuicCryptoWriteFrames(&Connection->Crypto, Builder)) {
             if (Builder->Metadata->FrameCount == QUIC_MAX_FRAMES_PER_PACKET) {
                 return TRUE;
@@ -467,15 +519,13 @@ QuicSendWriteFrames(
                 &Frame,
                 &Builder->DatagramLength,
                 AvailableBufferLength,
-                (uint8_t*)Builder->Datagram->Buffer)) {
+                Builder->Datagram->Buffer)) {
 
             Send->SendFlags &= ~(QUIC_CONN_SEND_FLAG_CONNECTION_CLOSE | QUIC_CONN_SEND_FLAG_APPLICATION_CLOSE);
             (void)QuicPacketBuilderAddFrame(
                 Builder, IsApplicationClose ? QUIC_FRAME_CONNECTION_CLOSE_1 : QUIC_FRAME_CONNECTION_CLOSE, FALSE);
-        } else {
-            RanOutOfRoom = TRUE;
-        }
-
+        } 
+           
         return TRUE;
     }
 
@@ -634,7 +684,7 @@ QuicSendWriteFrames(
 
             BOOLEAN HasMoreCidsToSend = FALSE;
             BOOLEAN MaxFrameLimitHit = FALSE;
-            for (QUIC_SINGLE_LIST_ENTRY* Entry = Connection->SourceCids.Next;
+            for (QUIC_SLIST_ENTRY* Entry = Connection->SourceCids.Next;
                     Entry != NULL;
                     Entry = Entry->Next) {
                 QUIC_CID_HASH_ENTRY* SourceCid =
@@ -664,8 +714,7 @@ QuicSendWriteFrames(
                     SourceCid->CID.Data,
                     SourceCid->CID.Length);
                 QUIC_DBG_ASSERT(SourceCid->CID.Length == MsQuicLib.CidTotalLength);
-                QuicBindingGenerateStatelessResetToken(
-                    Builder->Path->Binding,
+                QuicLibraryGenerateStatelessResetToken(
                     SourceCid->CID.Data,
                     Frame.Buffer + SourceCid->CID.Length);
 
@@ -703,10 +752,10 @@ QuicSendWriteFrames(
             for (QUIC_LIST_ENTRY* Entry = Connection->DestCids.Flink;
                     Entry != &Connection->DestCids;
                     Entry = Entry->Flink) {
-                QUIC_CID_QUIC_LIST_ENTRY* DestCid =
+                QUIC_CID_LIST_ENTRY* DestCid =
                     QUIC_CONTAINING_RECORD(
                         Entry,
-                        QUIC_CID_QUIC_LIST_ENTRY,
+                        QUIC_CID_LIST_ENTRY,
                         Link);
                 if (!DestCid->CID.NeedsToSend) {
                     continue;
@@ -747,6 +796,36 @@ QuicSendWriteFrames(
             }
         }
 
+        if (Send->SendFlags & QUIC_CONN_SEND_FLAG_ACK_FREQUENCY) {
+
+            QUIC_ACK_FREQUENCY_EX Frame;
+            Frame.SequenceNumber = Connection->SendAckFreqSeqNum;
+            Frame.PacketTolerance = Connection->PeerPacketTolerance;
+            Frame.UpdateMaxAckDelay =
+                MS_TO_US(
+                    (uint64_t)Connection->Settings.MaxAckDelayMs +
+                    (uint64_t)MsQuicLib.TimerResolutionMs);
+            Frame.IgnoreOrder = FALSE;
+
+            if (QuicAckFrequencyFrameEncode(
+                    &Frame,
+                    &Builder->DatagramLength,
+                    AvailableBufferLength,
+                    Builder->Datagram->Buffer)) {
+
+                Send->SendFlags &= ~QUIC_CONN_SEND_FLAG_ACK_FREQUENCY;
+                Builder->Metadata->Frames[
+                    Builder->Metadata->FrameCount].ACK_FREQUENCY.Sequence =
+                        Frame.SequenceNumber;
+                if (QuicPacketBuilderAddFrame(Builder, QUIC_FRAME_ACK_FREQUENCY, TRUE)) {
+                    return TRUE;
+                }
+            } else {
+                RanOutOfRoom = TRUE;
+            }
+        }
+
+
         if (Send->SendFlags & QUIC_CONN_SEND_FLAG_DATAGRAM) {
             RanOutOfRoom = QuicDatagramWriteFrame(&Connection->Datagram, Builder);
             if (Builder->Metadata->FrameCount == QUIC_MAX_FRAMES_PER_PACKET) {
@@ -760,7 +839,16 @@ QuicSendWriteFrames(
         if (Builder->DatagramLength < AvailableBufferLength) {
             Builder->Datagram->Buffer[Builder->DatagramLength++] = QUIC_FRAME_PING;
             Send->SendFlags &= ~QUIC_CONN_SEND_FLAG_PING;
-            Builder->MinimumDatagramLength = (uint16_t)Builder->Datagram->Length;
+            if (Connection->KeepAlivePadding) {
+                Builder->MinimumDatagramLength =
+                    Builder->DatagramLength + Connection->KeepAlivePadding + Builder->EncryptionOverhead;
+                if (Builder->MinimumDatagramLength > (uint16_t)Builder->Datagram->Length) {			
+            		Builder->MinimumDatagramLength = (uint16_t)Builder->Datagram->Length;
+				} 
+			}else {
+				Builder->MinimumDatagramLength = (uint16_t)Builder->Datagram->Length;
+			}
+
             if (QuicPacketBuilderAddFrame(Builder, QUIC_FRAME_PING, TRUE)) {
                 return TRUE;
             }
@@ -775,7 +863,8 @@ Exit:
     // The only valid reason to not have framed anything is that there was too
     // little room left in the packet to fit anything more.
     //
-    QUIC_DBG_ASSERT(Builder->Metadata->FrameCount > PrevFrameCount || RanOutOfRoom);
+    QUIC_DBG_ASSERT(Builder->Metadata->FrameCount > PrevFrameCount || RanOutOfRoom ||
+	QuicIsRandomMemoryFailureEnabled());
     UNREFERENCED_PARAMETER(RanOutOfRoom);
 
     return Builder->Metadata->FrameCount > PrevFrameCount;
@@ -792,7 +881,9 @@ QuicSendCanSendStreamNow(
 
     if (Connection->Crypto.TlsState.WriteKey == QUIC_PACKET_KEY_1_RTT) {
         return QuicStreamCanSendNow(Stream, FALSE);
-    } else if (Connection->Crypto.TlsState.WriteKeys[QUIC_PACKET_KEY_0_RTT] != NULL) {
+    } 
+
+	if (Connection->Crypto.TlsState.WriteKeys[QUIC_PACKET_KEY_0_RTT] != NULL) {
         return QuicStreamCanSendNow(Stream, TRUE);
     }
 
@@ -827,11 +918,24 @@ QuicSendGetNextStream(
 
             if (Connection->State.UseRoundRobinStreamScheduling) {
                 //
-                // Move the stream to the end of the queue.
-                //
-                QuicListEntryRemove(&Stream->SendLink);
-                QuicListInsertTail(&Send->SendStreams, &Stream->SendLink);
-
+                //Move the stream after any streams of the same priority. Start
+                //with the "next" entry in the list and keep going until the
+                //next entry's priority is less. Then move the stream before
+                //that entry.
+                //                                        
+                
+                QUIC_LIST_ENTRY* LastEntry = Stream->SendLink.Flink;
+                while (Stream->SendLink.Flink != &Send->SendStreams) {
+                    if (Stream->SendPriority >
+                        QUIC_CONTAINING_RECORD(LastEntry, QUIC_STREAM, SendLink)->SendPriority) {
+                        break;
+                    }
+                    LastEntry = LastEntry->Flink;
+                }
+                if (LastEntry->Blink != &Stream->SendLink) {
+                    QuicListEntryRemove(&Stream->SendLink);
+                    QuicListInsertTail(LastEntry, &Stream->SendLink);
+                }
                 *PacketCount = QUIC_STREAM_SEND_BATCH_COUNT;
 
             } else { // FIFO prioritization scheme
@@ -879,6 +983,24 @@ QuicSendPathChallenges(
         if (!QuicPacketBuilderPrepareForControlFrames(
                 &Builder, FALSE, QUIC_CONN_SEND_FLAG_PATH_CHALLENGE)) {
             continue;
+        }
+
+		if (!Path->IsMinMtuValidated) {
+            //
+            //Path challenges need to be padded to at least the same as initial
+            //packets to validate min MTU.
+            //                                  
+            Builder.MinimumDatagramLength =
+                MaxUdpPayloadSizeForFamily(
+                    QuicAddrGetFamily(&Builder.Path->RemoteAddress),
+                    Builder.Path->Mtu);
+            if ((uint32_t)Builder.MinimumDatagramLength > Builder.Datagram->Length) {
+                //
+                //If we're limited by amplification protection, just pad up to
+                //that limit instead.
+                //                                               
+                Builder.MinimumDatagramLength = (uint16_t)Builder.Datagram->Length;
+            }
         }
 
         uint16_t AvailableBufferLength =
@@ -936,16 +1058,25 @@ QuicSendFlush(
     QuicConnRemoveOutFlowBlockedReason(
         Connection, QUIC_FLOW_BLOCKED_SCHEDULING | QUIC_FLOW_BLOCKED_PACING);
 
-    if (Send->SendFlags == 0 && QuicListIsEmpty(&Send->SendStreams)) {
-        return TRUE;
-    }
 
     QUIC_PATH* Path = &Connection->Paths[0];
     if (Path->DestCid == NULL) {
         return TRUE;
     }
 
-    QUIC_DBG_ASSERT(QuicSendCanSendFlagsNow(Send));
+   QuicMtuDiscoveryCheckSearchCompleteTimeout(Connection, QuicTimeUs64());
+    //
+    // If path is active without being peer validated, disable MTU flag if set.
+    //       
+
+    if (!Path->IsPeerValidated) {
+        Send->SendFlags &= ~QUIC_CONN_SEND_FLAG_DPLPMTUD;
+    }
+
+    if (Send->SendFlags == 0 && QuicListIsEmpty(&Send->SendStreams)) {
+        return TRUE;
+    }
+
 
     QUIC_SEND_RESULT Result = QUIC_SEND_INCOMPLETE;
     QUIC_STREAM* Stream = NULL;
@@ -971,6 +1102,12 @@ QuicSendFlush(
     QuicTraceLogConnVerbose(
         "FlushSend: Flushing send. Allowance=%u bytes",
         Builder.SendAllowance);
+
+#if DEBUG
+    uint32_t DeadlockDetection = 0;
+    uint32_t PrevSendFlags = UINT32_MAX;        // N-1
+    uint32_t PrevPrevSendFlags = UINT32_MAX;    // N-2
+#endif
 
     do {
 
@@ -1035,24 +1172,55 @@ QuicSendFlush(
 
         BOOLEAN WrotePacketFrames;
         BOOLEAN FlushBatchedDatagrams = FALSE;
-        if ((SendFlags & ~QUIC_CONN_SEND_FLAG_PMTUD) != 0) {
+        if ((SendFlags & ~QUIC_CONN_SEND_FLAG_DPLPMTUD) != 0) {
             QUIC_DBG_ASSERT(QuicSendCanSendFlagsNow(Send));
             if (!QuicPacketBuilderPrepareForControlFrames(
                     &Builder,
                     Send->TailLossProbeNeeded,
-                    SendFlags & ~QUIC_CONN_SEND_FLAG_PMTUD)) {
+                    SendFlags & ~QUIC_CONN_SEND_FLAG_DPLPMTUD)) {
                 break;
             }
             WrotePacketFrames = QuicSendWriteFrames(Send, &Builder);
 
-        } else if (Stream != NULL ||
+        } else if ((SendFlags & QUIC_CONN_SEND_FLAG_DPLPMTUD) != 0) {
+            if (!QuicPacketBuilderPrepareForPathMtuDiscovery(&Builder)) {
+                break;
+            }
+            FlushBatchedDatagrams = TRUE;
+            Send->SendFlags &= ~QUIC_CONN_SEND_FLAG_DPLPMTUD;
+            if (Builder.Metadata->FrameCount < QUIC_MAX_FRAMES_PER_PACKET &&
+                Builder.DatagramLength < Builder.Datagram->Length - Builder.EncryptionOverhead) {
+                //
+                //We are doing DPLPMTUD, so make sure there is a PING frame in there, if
+                //we have room, just to make sure we get an ACK.
+                //                                             
+                Builder.Datagram->Buffer[Builder.DatagramLength++] = QUIC_FRAME_PING;
+                Builder.Metadata->Frames[Builder.Metadata->FrameCount++].Type = QUIC_FRAME_PING;
+                WrotePacketFrames = TRUE;
+            } else {
+                WrotePacketFrames = FALSE;
+            }
+		} else if (Stream != NULL ||
             (Stream = QuicSendGetNextStream(Send, &StreamPacketCount)) != NULL) {
             if (!QuicPacketBuilderPrepareForStreamFrames(
                     &Builder,
                     Send->TailLossProbeNeeded)) {
                 break;
             }
-            WrotePacketFrames = QuicStreamSendWrite(Stream, &Builder);
+
+            //
+            //Write any ACK frames if we have them.
+            //                       
+            QUIC_PACKET_SPACE* Packets = Connection->Packets[Builder.EncryptLevel];
+            WrotePacketFrames =
+                Builder.PacketType != QUIC_0_RTT_PROTECTED &&
+                QuicAckTrackerHasPacketsToAck(&Packets->AckTracker) &&
+                QuicAckTrackerAckFrameEncode(&Packets->AckTracker, &Builder);
+            //
+            //Write the stream frames.
+            //                      
+
+            WrotePacketFrames |= QuicStreamSendWrite(Stream, &Builder);
 
             if (Stream->SendFlags == 0) {
                 //
@@ -1072,26 +1240,7 @@ QuicSendFlush(
                 Stream = NULL;
             }
 
-        } else if (SendFlags == QUIC_CONN_SEND_FLAG_PMTUD) {
-            if (!QuicPacketBuilderPrepareForPathMtuDiscovery(&Builder)) {
-                break;
-            }
-            FlushBatchedDatagrams = TRUE;
-            Send->SendFlags &= ~QUIC_CONN_SEND_FLAG_PMTUD;
-            if (Builder.Metadata->FrameCount < QUIC_MAX_FRAMES_PER_PACKET &&
-                Builder.DatagramLength < Builder.Datagram->Length - Builder.EncryptionOverhead) {
-                //
-                // We are doing PMTUD, so make sure there is a PING frame in there, if
-                // we have room, just to make sure we get an ACK.
-                //
-                Builder.Datagram->Buffer[Builder.DatagramLength++] = QUIC_FRAME_PING;
-                Builder.Metadata->Frames[Builder.Metadata->FrameCount++].Type = QUIC_FRAME_PING;
-                WrotePacketFrames = TRUE;
-            } else {
-                WrotePacketFrames = FALSE;
-            }
-
-        } else {
+        } else { 
             //
             // Nothing else left to send right now.
             //
@@ -1101,13 +1250,6 @@ QuicSendFlush(
 
         Send->TailLossProbeNeeded = FALSE;
 
-        //
-        // If the following assert is hit, then we just went through the
-        // framing logic and nothing was written to the packet. This is bad!
-        // It likely indicates an infinite loop will follow.
-        //
-        QUIC_DBG_ASSERT(Builder.Metadata->FrameCount != 0 || Builder.PacketStart != 0);
-
         if (!WrotePacketFrames ||
             Builder.Metadata->FrameCount == QUIC_MAX_FRAMES_PER_PACKET ||
             Builder.Datagram->Length - Builder.DatagramLength < QUIC_MIN_PACKET_SPARE_SPACE) {
@@ -1116,17 +1258,30 @@ QuicSendFlush(
             // We now have enough data in the current packet that we should
             // finalize it.
             //
-            QuicPacketBuilderFinalize(&Builder, FlushBatchedDatagrams);
+            if (!QuicPacketBuilderFinalize(&Builder, !WrotePacketFrames || FlushBatchedDatagrams)) {
+                //
+                //Don't have any more space to send.
+                //
+                break;
+			}                                
         }
+#if DEBUG
+        QUIC_DBG_ASSERT(++DeadlockDetection < 1000);
+        UNREFERENCED_PARAMETER(PrevPrevSendFlags); // Used in debugging only
+        PrevPrevSendFlags = PrevSendFlags;
+        PrevSendFlags = SendFlags;
+#endif
 
-    } while (Builder.SendContext != NULL ||
+
+    } while (Builder.SendData != NULL ||
         Builder.TotalCountDatagrams < QUIC_MAX_DATAGRAMS_PER_SEND);
 
-    if (Builder.SendContext != NULL) {
+    if (Builder.SendData != NULL) {
         //
         // Final send, if there is anything left over.
         //
         QuicPacketBuilderFinalize(&Builder, TRUE);
+        QUIC_DBG_ASSERT(Builder.SendData == NULL);
     }
 
     QuicPacketBuilderCleanup(&Builder);
@@ -1146,7 +1301,25 @@ QuicSendFlush(
         // operation is queued to send the rest.
         //
         QuicSendQueueFlush(&Connection->Send, REASON_SCHEDULING);
-    }
+
+		if (Builder.TotalCountDatagrams + 1 > Connection->PeerPacketTolerance) {
+            //
+            //We're scheduling limited, so we should tell the peer to use our
+            //(max) batch size + 1 as the peer tolerance as a hint that they
+            //should expect more than a single batch before needing to send an
+            //acknowledgement back.
+            //                                                           
+			 QuicConnUpdatePeerPacketTolerance(Connection, Builder.TotalCountDatagrams + 1);
+		}
+    } else if (Builder.TotalCountDatagrams > Connection->PeerPacketTolerance) {
+        //
+        //If we aren't scheduling limited, we should just use the current batch
+        //size as the packet tolerance for the peer to use for acknowledging
+        //packets.
+        //                               
+        //Temporarily disabled for now.
+        //QuicConnUpdatePeerPacketTolerance(Connection, Builder.TotalCountDatagrams);
+	}
 
     return Result != QUIC_SEND_INCOMPLETE;
 }
@@ -1204,22 +1377,3 @@ QuicSendProcessDelayedAckTimer(
     QuicSendValidate(Send);
 }
 
-_IRQL_requires_max_(DISPATCH_LEVEL)
-void
-QuicSendOnMtuProbePacketAcked(
-    _In_ QUIC_SEND* Send,
-    _In_ QUIC_PATH* Path,
-    _In_ QUIC_SENT_PACKET_METADATA* Packet
-    )
-{
-    QUIC_CONNECTION* Connection = QuicSendGetConnection(Send);
-    Path->Mtu =
-        PacketSizeFromUdpPayloadSize(
-            QuicAddrGetFamily(&Path->RemoteAddress),
-            Packet->PacketLength);
-    QuicTraceLogConnInfo(
-        "PathMtuUpdated: Path[%hhu] MTU updated to %hu bytes",
-        Path->ID,
-        Path->Mtu);
-    QuicDatagramOnSendStateChanged(&Connection->Datagram);
-}

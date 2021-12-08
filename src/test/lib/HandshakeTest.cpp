@@ -11,10 +11,22 @@ Abstract:
 
 #include "precomp.h"
 
+#if 0
 QUIC_TEST_DATAPATH_HOOKS DatapathHooks::FuncTable = {
     DatapathHooks::ReceiveCallback,
     DatapathHooks::SendCallback
 };
+#endif
+
+QUIC_TEST_DATAPATH_HOOKS DatapathHooks::FuncTable = {
+    DatapathHooks::CreateCallback,
+    DatapathHooks::GetLocalAddressCallback,
+    DatapathHooks::GetRemoteAddressCallback,
+    DatapathHooks::ReceiveCallback,
+    DatapathHooks::SendCallback
+};
+ 
+
 DatapathHooks* DatapathHooks::Instance;
 
 void QuicTestInitialize()

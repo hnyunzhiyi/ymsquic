@@ -119,10 +119,34 @@ struct DatapathHook
     DatapathHook() : Next(nullptr) { }
 
     virtual
+    _IRQL_requires_max_(PASSIVE_LEVEL)
+    void
+    Create(
+        _Inout_opt_ QUIC_ADDR* /* RemoteAddress */,
+        _Inout_opt_ QUIC_ADDR* /* LocalAddress */
+        ) {
+    }
+    virtual
+    _IRQL_requires_max_(PASSIVE_LEVEL)
+    void
+    GetLocalAddress(
+        _Inout_ QUIC_ADDR* /* Address */
+        ) {
+    }
+
+    virtual
+    _IRQL_requires_max_(PASSIVE_LEVEL)
+    void
+    GetRemoteAddress(
+        _Inout_ QUIC_ADDR* /* Address */
+        ) {
+    }
+
+    virtual
     _IRQL_requires_max_(DISPATCH_LEVEL)
     BOOLEAN
     Receive(
-        _Inout_ struct QUIC_RECV_DATAGRAM* /* Datagram */
+        _Inout_ struct QUIC_RECV_DATA* /* Datagram */
         ) {
         return FALSE; // Don't drop by default
     }
@@ -133,7 +157,7 @@ struct DatapathHook
     Send(
         _Inout_ QUIC_ADDR* /* RemoteAddress */,
         _Inout_opt_ QUIC_ADDR* /* LocalAddress */,
-        _Inout_ struct QUIC_DATAPATH_SEND_CONTEXT* /* SendContext */
+        _Inout_ struct QUIC_SEND_DATA* /* SendContext */
         ) {
         return FALSE; // Don't drop by default
     }
@@ -147,11 +171,42 @@ class DatapathHooks
     QUIC_DISPATCH_LOCK Lock;
 
     static
+    _IRQL_requires_max_(PASSIVE_LEVEL)
+    void
+    QUIC_API
+    CreateCallback(
+        _Inout_opt_ QUIC_ADDR* RemoteAddress,
+        _Inout_opt_ QUIC_ADDR* LocalAddress
+        ) {
+        return Instance->Create(RemoteAddress, LocalAddress);
+    }
+
+    static
+    _IRQL_requires_max_(PASSIVE_LEVEL)
+    void
+    QUIC_API
+    GetLocalAddressCallback(
+        _Inout_ QUIC_ADDR* Address
+        ) {
+        return Instance->GetLocalAddress(Address);
+    }
+
+    static
+    _IRQL_requires_max_(PASSIVE_LEVEL)
+    void
+    QUIC_API
+    GetRemoteAddressCallback(
+        _Inout_ QUIC_ADDR* Address
+        ) {
+        return Instance->GetRemoteAddress(Address);
+    }
+
+    static
     _IRQL_requires_max_(DISPATCH_LEVEL)
     BOOLEAN
     QUIC_API
     ReceiveCallback(
-        _Inout_ struct QUIC_RECV_DATAGRAM* Datagram
+        _Inout_ struct QUIC_RECV_DATA* Datagram
         ) {
         return Instance->Receive(Datagram);
     }
@@ -163,7 +218,7 @@ class DatapathHooks
     SendCallback(
         _Inout_ QUIC_ADDR* RemoteAddress,
         _Inout_opt_ QUIC_ADDR* LocalAddress,
-        _Inout_ struct QUIC_DATAPATH_SEND_CONTEXT* SendContext
+        _Inout_ struct QUIC_SEND_DATA* SendContext
         ) {
         return Instance->Send(RemoteAddress, LocalAddress, SendContext);
     }
@@ -209,9 +264,49 @@ class DatapathHooks
 #endif
     }
 
+    void
+    Create(
+        _Inout_opt_ QUIC_ADDR* RemoteAddress,
+        _Inout_opt_ QUIC_ADDR* LocalAddress
+        ) {
+       	QuicDispatchLockAcquire(&Lock);
+        DatapathHook* Iter = Hooks;
+        while (Iter) {
+            Iter->Create(RemoteAddress, LocalAddress);
+            Iter = Iter->Next;
+        }
+        QuicDispatchLockRelease(&Lock);
+    }
+
+    void
+    GetLocalAddress(
+        _Inout_ QUIC_ADDR* Address
+        ) {
+        QuicDispatchLockAcquire(&Lock);
+        DatapathHook* Iter = Hooks;
+        while (Iter) {
+            Iter->GetLocalAddress(Address);
+            Iter = Iter->Next;
+        }
+        QuicDispatchLockRelease(&Lock);
+    }
+
+    void
+    GetRemoteAddress(
+        _Inout_ QUIC_ADDR* Address
+        ) {
+        QuicDispatchLockAcquire(&Lock);
+        DatapathHook* Iter = Hooks;
+        while (Iter) {
+            Iter->GetRemoteAddress(Address);
+            Iter = Iter->Next;
+        }
+        QuicDispatchLockRelease(&Lock);
+    }
+
     BOOLEAN
     Receive(
-        _Inout_ struct QUIC_RECV_DATAGRAM* Datagram
+        _Inout_ struct QUIC_RECV_DATA* Datagram
         ) {
         BOOLEAN Result = FALSE;
         QuicDispatchLockAcquire(&Lock);
@@ -231,7 +326,7 @@ class DatapathHooks
     Send(
         _Inout_ QUIC_ADDR* RemoteAddress,
         _Inout_opt_ QUIC_ADDR* LocalAddress,
-        _Inout_ struct QUIC_DATAPATH_SEND_CONTEXT* SendContext
+        _Inout_ struct QUIC_SEND_DATA* SendContext
         ) {
         BOOLEAN Result = FALSE;
         QuicDispatchLockAcquire(&Lock);
@@ -304,7 +399,7 @@ struct RandomLossHelper : public DatapathHook
     _IRQL_requires_max_(DISPATCH_LEVEL)
     BOOLEAN
     Receive(
-        _Inout_ struct QUIC_RECV_DATAGRAM* /* Datagram */
+        _Inout_ struct QUIC_RECV_DATA* /* Datagram */
         ) {
         uint8_t RandomValue;
         QuicRandom(sizeof(RandomValue), &RandomValue);
@@ -330,7 +425,7 @@ struct SelectiveLossHelper : public DatapathHook
     _IRQL_requires_max_(DISPATCH_LEVEL)
     BOOLEAN
     Receive(
-        _Inout_ struct QUIC_RECV_DATAGRAM* /* Datagram */
+        _Inout_ struct QUIC_RECV_DATA* /* Datagram */
         ) {
         if (DropPacketCount == 0) {
             return FALSE;
@@ -356,7 +451,7 @@ struct ReplaceAddressHelper : public DatapathHook
     _IRQL_requires_max_(DISPATCH_LEVEL)
     BOOLEAN
     Receive(
-        _Inout_ struct QUIC_RECV_DATAGRAM* Datagram
+        _Inout_ struct QUIC_RECV_DATA* Datagram
         ) {
         if (QuicAddrCompare(
                 &Datagram->Tuple->RemoteAddress,
@@ -406,7 +501,7 @@ struct ReplaceAddressThenDropHelper : public DatapathHook
     _IRQL_requires_max_(DISPATCH_LEVEL)
     BOOLEAN
     Receive(
-        _Inout_ struct QUIC_RECV_DATAGRAM* Datagram
+        _Inout_ struct QUIC_RECV_DATA* Datagram
         ) {
         if (QuicAddrCompare(
                 &Datagram->Tuple->RemoteAddress,

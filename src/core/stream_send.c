@@ -100,6 +100,7 @@ QuicStreamSendShutdown(
     _In_ QUIC_STREAM* Stream,
     _In_ BOOLEAN Graceful,
     _In_ BOOLEAN Silent,
+    _In_ BOOLEAN DelaySend,
     _In_ QUIC_VAR_INT ErrorCode   // Only for !Graceful
     )
 {
@@ -145,7 +146,8 @@ QuicStreamSendShutdown(
         QuicSendSetStreamSendFlag(
             &Stream->Connection->Send,
             Stream,
-            QUIC_STREAM_SEND_FLAG_FIN);
+            QUIC_STREAM_SEND_FLAG_FIN,
+			DelaySend);
 
     } else {
 
@@ -192,7 +194,7 @@ QuicStreamSendShutdown(
         }
 
         Stream->Flags.LocalCloseReset = TRUE;
-        Stream->SendCloseErrorCode = ErrorCode;
+        Stream->SendShutdownErrorCode = ErrorCode;
 
         if (!Silent) {
             //
@@ -201,7 +203,8 @@ QuicStreamSendShutdown(
             QuicSendSetStreamSendFlag(
                 &Stream->Connection->Send,
                 Stream,
-                QUIC_STREAM_SEND_FLAG_SEND_ABORT);
+                QUIC_STREAM_SEND_FLAG_SEND_ABORT,
+				FALSE);
 
             //
             // Clear any outstanding send path frames.
@@ -291,28 +294,32 @@ QuicStreamSendCanWriteDataFrames(
         //
         return TRUE;
 
-    } else if (RECOV_WINDOW_OPEN(Stream)) {
+    } 
+	
+	if (RECOV_WINDOW_OPEN(Stream)) {
         //
         // We have some bytes to recover. Since these bytes are being
         // retransmitted, we can ignore flow control.
         //
         return TRUE;
 
-    } else if (Stream->NextSendOffset == Stream->QueuedSendOffset) {
+    } 
+	
+	if (Stream->NextSendOffset == Stream->QueuedSendOffset) {
         //
         // No unsent data. Can send only if a FIN is needed.
         //
         return !!(Stream->SendFlags & QUIC_STREAM_SEND_FLAG_FIN);
 
-    } else {
-        //
-        // Some unsent data. Can send only if flow control will allow.
-        //
-        QUIC_SEND* Send = &Stream->Connection->Send;
-        return
-            Stream->NextSendOffset < Stream->MaxAllowedSendOffset &&
-            Send->OrderedStreamBytesSent < Send->PeerMaxData;
-    }
+    } 
+    //
+    // Some unsent data. Can send only if flow control will allow.
+    //
+    QUIC_SEND* Send = &Stream->Connection->Send;
+    return
+        Stream->NextSendOffset < Stream->MaxAllowedSendOffset &&
+        Send->OrderedStreamBytesSent < Send->PeerMaxData;
+    
 }
 
 BOOLEAN
@@ -483,7 +490,6 @@ QuicStreamSendFlush(
         SendRequest->Next = NULL;
         TotalBytesSent += (int64_t) SendRequest->TotalLength;
 
-        QUIC_DBG_ASSERT(SendRequest->TotalLength != 0 || SendRequest->Flags & QUIC_SEND_FLAG_FIN);
         QUIC_DBG_ASSERT(!(SendRequest->Flags & QUIC_SEND_FLAG_BUFFERED));
 
         if (!Stream->Flags.SendEnabled) {
@@ -554,13 +560,19 @@ QuicStreamSendFlush(
             //
             // Gracefully shutdown the send direction if the flag is set.
             //
-            QuicStreamSendShutdown(Stream, TRUE, FALSE, 0);
+            QuicStreamSendShutdown(
+                Stream,
+                TRUE,
+                FALSE,
+                !!(SendRequest->Flags & QUIC_SEND_FLAG_DELAY_SEND),
+                0);
         }
 
         QuicSendSetStreamSendFlag(
             &Stream->Connection->Send,
             Stream,
-            QUIC_STREAM_SEND_FLAG_DATA);
+            QUIC_STREAM_SEND_FLAG_DATA,
+			!!(SendRequest->Flags & QUIC_SEND_FLAG_DELAY_SEND));
 
         if (Stream->Connection->Settings.SendBufferingEnabled) {
             QuicSendBufferFill(Stream->Connection);
@@ -572,20 +584,22 @@ QuicStreamSendFlush(
     }
 
     if (Start) {
-        (void)QuicStreamStart(Stream, QUIC_STREAM_START_FLAG_ASYNC, FALSE);
+        (void)QuicStreamStart(
+            Stream,
+            QUIC_STREAM_START_FLAG_IMMEDIATE | QUIC_STREAM_START_FLAG_ASYNC,
+            FALSE);        
     }
 
     QuicPerfCounterAdd(QUIC_PERF_COUNTER_APP_SEND_BYTES, TotalBytesSent);
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
-_Ret_range_(0, Len)
-uint16_t
+void
 QuicStreamCopyFromSendRequests(
     _In_ QUIC_STREAM* Stream,
     _In_ uint64_t Offset,
     _Out_writes_bytes_(Len) uint8_t* Buf,
-    _In_ uint16_t Len
+    _In_range_(>, 0) uint16_t Len
     )
 {
     //
@@ -597,27 +611,18 @@ QuicStreamCopyFromSendRequests(
     // requests.
     //
 
-    QUIC_SEND_REQUEST* Req;
-    uint16_t Copied = 0;
 
     QUIC_DBG_ASSERT(Len > 0);
-    QUIC_DBG_ASSERT(Offset < Stream->QueuedSendOffset);
     QUIC_DBG_ASSERT(Stream->SendRequests != NULL);
     QUIC_DBG_ASSERT(Offset >= Stream->SendRequests->StreamOffset);
-
-    if (Len > Stream->QueuedSendOffset - Offset) {
-        //
-        // Since Len (a 16-bit number) is greater, this won't overflow.
-        //
-        Len = (uint16_t)(Stream->QueuedSendOffset - Offset);
-        QUIC_DBG_ASSERT(Len > 0);
-    }
 
     //
     // Find the send request containing the first byte, using the bookmark if
     // possible (if the caller is requesting bytes before the bookmark, e.g.
     // for a retransmission, then we have to do a full search).
     //
+	QUIC_SEND_REQUEST* Req;   
+
     if (Stream->SendBookmark != NULL &&
         Stream->SendBookmark->StreamOffset <= Offset) {
         Req = Stream->SendBookmark;
@@ -625,6 +630,7 @@ QuicStreamCopyFromSendRequests(
         Req = Stream->SendRequests;
     }
     while (Req && (Req->StreamOffset + Req->TotalLength <= Offset)) {
+		QUIC_DBG_ASSERT(Req->Next);
         Req = Req->Next;
     }
 
@@ -648,15 +654,17 @@ QuicStreamCopyFromSendRequests(
         QUIC_DBG_ASSERT(Req != NULL);
         QUIC_DBG_ASSERT(CurIndex < Req->BufferCount);
         QUIC_DBG_ASSERT(CurOffset <= (uint64_t)Req->Buffers[CurIndex].Length);
+		QUIC_DBG_ASSERT(Len > 0);
 
         //
         // Copy the data from the request buffer to the frame buffer.
         //
-        uint16_t SubLen = (uint16_t)min(Len, Req->Buffers[CurIndex].Length - (uint32_t)CurOffset);
-        QuicCopyMemory(Buf, Req->Buffers[CurIndex].Buffer + CurOffset, SubLen);
-        Len -= SubLen;
-        Buf += SubLen;
-        Copied += SubLen;
+        uint32_t BufferLeft = Req->Buffers[CurIndex].Length - (uint32_t)CurOffset;
+        uint16_t CopyLength = Len < BufferLeft ? Len : (uint16_t)BufferLeft;
+        QUIC_DBG_ASSERT(CopyLength > 0);
+        QuicCopyMemory(Buf, Req->Buffers[CurIndex].Buffer + CurOffset, CopyLength); //拷贝到Buf
+        Len -= CopyLength;
+        Buf += CopyLength;
 
         if (Len == 0) {
             //
@@ -670,19 +678,19 @@ QuicStreamCopyFromSendRequests(
         // current request, move to the next request.
         //
         CurOffset = 0;
-        if (++CurIndex == Req->BufferCount) {
-            QUIC_DBG_ASSERT(Req->Next != NULL);
-            Req = Req->Next;
-            CurIndex = 0;
-        }
+		do {
+        	if (++CurIndex == Req->BufferCount) {
+				CurIndex = 0;
+            	QUIC_DBG_ASSERT(Req->Next != NULL);
+            	Req = Req->Next;
+           	}
+        } while (Req->Buffers[CurIndex].Length == 0);
     }
 
     //
     // Save the bookmark for later.
     //
     Stream->SendBookmark = Req;
-
-    return Copied;
 }
 
 //
@@ -702,7 +710,6 @@ QuicStreamWriteOneFrame(
 {
     QUIC_STREAM_EX Frame = { FALSE, ExplicitDataLength, Stream->ID, Offset, 0, NULL };
     uint16_t HeaderLength = 0;
-    uint16_t SendLength;
 
     //
     // First calculate the header length to make sure there's at least room for
@@ -722,13 +729,20 @@ QuicStreamWriteOneFrame(
     // -the value passed in as FramePayloadBytes is an upper limit on payload bytes.
     // -even if SendLength becomes zero, we might still write an empty FIN frame.
     //
-    SendLength = min(*FrameBytes - HeaderLength, *FramePayloadBytes);
-    if (SendLength > 0) {
-        uint8_t* FrameBuffer = Buffer + HeaderLength;
-        Frame.Length =
-            QuicStreamCopyFromSendRequests(
-                Stream, Offset, FrameBuffer, SendLength);
-        Frame.Data = FrameBuffer;
+    Frame.Length = *FrameBytes - HeaderLength;
+    if (Frame.Length > *FramePayloadBytes) {
+        Frame.Length = *FramePayloadBytes;
+    }
+    if (Frame.Length > 0) {
+        QUIC_DBG_ASSERT(Offset < Stream->QueuedSendOffset);
+        if (Frame.Length > Stream->QueuedSendOffset - Offset) {
+            Frame.Length = Stream->QueuedSendOffset - Offset;
+            QUIC_DBG_ASSERT(Frame.Length > 0);
+        }
+        Frame.Data = Buffer + HeaderLength;
+        QuicStreamCopyFromSendRequests(
+            Stream, Offset, (uint8_t*)Frame.Data, (uint16_t)Frame.Length);
+
         Stream->Connection->Stats.Send.TotalStreamBytes += Frame.Length;
     }
 
@@ -780,7 +794,8 @@ QuicStreamWriteOneFrame(
         Stream->SendFlags &= ~QUIC_STREAM_SEND_FLAG_FIN;
         PacketMetadata->Frames[PacketMetadata->FrameCount].Flags |= QUIC_SENT_FRAME_FLAG_STREAM_FIN;
     }
-    QuicStreamAddRef(Stream, QUIC_STREAM_REF_SEND_PACKET);
+    
+    QuicStreamSentMetadataIncrement(Stream);
     PacketMetadata->FrameCount++;
 }
 
@@ -842,7 +857,7 @@ QuicStreamWriteStreamFrames(
         //
         // Find the first SACK after the selected offset.
         //
-        uint32_t i = 0;
+       
         QUIC_SUBRANGE* Sack;
         if (Left == Stream->MaxSentLength) {
             //
@@ -850,6 +865,7 @@ QuicStreamWriteStreamFrames(
             //
             Sack = NULL;
         } else {
+			uint32_t i = 0;
             while ((Sack = QuicRangeGetSafe(&Stream->SparseAckRanges, i++)) != NULL &&
                 Sack->Low < Left) {
                 QUIC_DBG_ASSERT(Sack->Low + Sack->Count <= Left);
@@ -929,7 +945,8 @@ QuicStreamWriteStreamFrames(
                     Stream, QUIC_FLOW_BLOCKED_STREAM_FLOW_CONTROL)) {
                 QuicSendSetStreamSendFlag(
                     &Stream->Connection->Send,
-                    Stream, QUIC_STREAM_SEND_FLAG_DATA_BLOCKED);
+                    Stream, QUIC_STREAM_SEND_FLAG_DATA_BLOCKED,
+					FALSE);
             }
             ExitLoop = TRUE;
         }
@@ -1026,7 +1043,7 @@ QuicStreamSendWrite(
 
     if (Stream->SendFlags & QUIC_STREAM_SEND_FLAG_SEND_ABORT) {
 
-        QUIC_RESET_STREAM_EX Frame = { Stream->ID, Stream->SendCloseErrorCode, Stream->MaxSentLength };
+        QUIC_RESET_STREAM_EX Frame = { Stream->ID, Stream->SendShutdownErrorCode, Stream->MaxSentLength };
 
         if (QuicResetStreamFrameEncode(
                 &Frame,
@@ -1045,7 +1062,7 @@ QuicStreamSendWrite(
 
     if (Stream->SendFlags & QUIC_STREAM_SEND_FLAG_RECV_ABORT) {
 
-        QUIC_STOP_SENDING_EX Frame = { Stream->ID, Stream->SendCloseErrorCode };
+        QUIC_STOP_SENDING_EX Frame = { Stream->ID, Stream->RecvShutdownErrorCode };
 
         if (QuicStopSendingFrameEncode(
                 &Frame,
@@ -1245,7 +1262,8 @@ Done:
             QuicSendSetStreamSendFlag(
                 &Stream->Connection->Send,
                 Stream,
-                AddSendFlags);
+                AddSendFlags,
+				FALSE);
 
         QuicStreamSendDumpState(Stream);
         QuicStreamValidateRecoveryState(Stream);

@@ -13,14 +13,22 @@ Abstract:
 
 QUIC_LIBRARY MsQuicLib = {0};
 
+QUIC_TRACE_RUNDOWN_CALLBACK QuicTraceRundown;
+
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicLibApplyLoadBalancingSetting(
     void
     );
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicLibraryEvaluateSendRetryState(
+    void
+    );
+
 //
-// Initializes all global variables.
+// Initializes all global variables if not already done.
 //
 INITCODE
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -29,11 +37,24 @@ MsQuicLibraryLoad(
     void
     )
 {
-    QuicLockInitialize(&MsQuicLib.Lock);
-    QuicDispatchLockInitialize(&MsQuicLib.DatapathLock);
-    QuicListInitializeHead(&MsQuicLib.Registrations);
-    QuicListInitializeHead(&MsQuicLib.Bindings);
-    MsQuicLib.Loaded = TRUE;
+    if (InterlockedIncrement16(&MsQuicLib.LoadRefCount) == 1) {
+        //
+        //Load the library.
+        //
+		QuicPlatformSystemLoad();
+    	QuicLockInitialize(&MsQuicLib.Lock);
+    	QuicDispatchLockInitialize(&MsQuicLib.DatapathLock);
+		QuicDispatchLockInitialize(&MsQuicLib.StatelessRetryKeysLock);
+    	QuicListInitializeHead(&MsQuicLib.Registrations);
+    	QuicListInitializeHead(&MsQuicLib.Bindings);
+ 		QuicTraceRundownCallback = QuicTraceRundown;
+    	MsQuicLib.Loaded = TRUE;
+        MsQuicLib.Version[0] = VER_MAJOR;
+        MsQuicLib.Version[1] = VER_MINOR;
+        MsQuicLib.Version[2] = VER_PATCH;
+        MsQuicLib.Version[3] = VER_BUILD_ID;
+    }
+
 }
 
 //
@@ -46,11 +67,15 @@ MsQuicLibraryUnload(
     )
 {
     QUIC_FRE_ASSERT(MsQuicLib.Loaded);
-    QUIC_LIB_VERIFY(MsQuicLib.RefCount == 0);
-    QUIC_LIB_VERIFY(!MsQuicLib.InUse);
-    MsQuicLib.Loaded = FALSE;
-    QuicDispatchLockUninitialize(&MsQuicLib.DatapathLock);
-    QuicLockUninitialize(&MsQuicLib.Lock);
+    if (InterlockedDecrement16(&MsQuicLib.LoadRefCount) == 0) {	
+    	QUIC_LIB_VERIFY(MsQuicLib.OpenRefCount == 0);
+    	QUIC_LIB_VERIFY(!MsQuicLib.InUse);
+    	MsQuicLib.Loaded = FALSE;
+        QuicDispatchLockUninitialize(&MsQuicLib.StatelessRetryKeysLock);
+    	QuicDispatchLockUninitialize(&MsQuicLib.DatapathLock);
+    	QuicLockUninitialize(&MsQuicLib.Lock);
+		QuicPlatformSystemUnload();
+	}
 }
 
 void
@@ -110,7 +135,7 @@ QuicLibrarySumPerfCountersExternal(
 {
     QuicLockAcquire(&MsQuicLib.Lock);
 
-    if (MsQuicLib.RefCount == 0) {
+    if (MsQuicLib.OpenRefCount == 0) {
         QuicZeroMemory(Buffer, BufferLength);
     } else {
         QuicLibrarySumPerfCounters(Buffer, BufferLength);
@@ -118,6 +143,45 @@ QuicLibrarySumPerfCountersExternal(
 
     QuicLockRelease(&MsQuicLib.Lock);
 }
+
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicPerfCounterSnapShot(
+    _In_ uint64_t TimeDiffUs
+    )
+{
+    UNREFERENCED_PARAMETER(TimeDiffUs); // Only used in asserts below.
+
+    int64_t PerfCounterSamples[QUIC_PERF_COUNTER_MAX];
+    QuicLibrarySumPerfCounters(
+        (uint8_t*)PerfCounterSamples,
+        sizeof(PerfCounterSamples));
+
+// Ensure a perf counter stays below a given max Hz/frequency.
+#define QUIC_COUNTER_LIMIT_HZ(TYPE, LIMIT_PER_SECOND) \
+    QUIC_TEL_ASSERT( \
+        ((1000 * 1000 * (PerfCounterSamples[TYPE] - MsQuicLib.PerfCounterSamples[TYPE])) / TimeDiffUs) < LIMIT_PER_SECOND)
+
+// Ensures a perf counter doesn't consistently (both samples) go above a give max value.
+#define QUIC_COUNTER_CAP(TYPE, MAX_LIMIT) \
+    QUIC_TEL_ASSERT( \
+        PerfCounterSamples[TYPE] < MAX_LIMIT || \
+        MsQuicLib.PerfCounterSamples[TYPE] < MAX_LIMIT)
+
+    //
+    //Some heuristics to ensure that bad things aren't happening. TODO - these
+    //values should be configurable dynamically, somehow.
+    //           
+    QUIC_COUNTER_LIMIT_HZ(QUIC_PERF_COUNTER_CONN_HANDSHAKE_FAIL, 1000000); // Don't have 1 million failed handshakes per second
+    QUIC_COUNTER_CAP(QUIC_PERF_COUNTER_CONN_QUEUE_DEPTH, 100000); // Don't maintain huge queue depths
+
+    QuicCopyMemory(
+        MsQuicLib.PerfCounterSamples,
+        PerfCounterSamples,
+        sizeof(PerfCounterSamples));
+}
+
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
@@ -133,6 +197,10 @@ MsQuicLibraryOnSettingsChanged(
         //
         QuicLibApplyLoadBalancingSetting();
     }
+
+    MsQuicLib.HandshakeMemoryLimit =
+        (MsQuicLib.Settings.RetryMemoryLimit * QuicTotalMemory) / UINT16_MAX;
+    QuicLibraryEvaluateSendRetryState();
 
     if (UpdateRegistrations) {
         QuicLockAcquire(&MsQuicLib.Lock);
@@ -178,6 +246,11 @@ MsQuicLibraryInitialize(
     BOOLEAN PlatformInitialized = FALSE;
     uint32_t DefaultMaxPartitionCount = QUIC_MAX_PARTITION_COUNT;
 
+    const QUIC_UDP_DATAPATH_CALLBACKS DatapathCallbacks = {
+        QuicBindingReceive,
+        QuicBindingUnreachable
+    };
+
     Status = QuicPlatformInitialize();
     if (QUIC_FAILED(Status)) {
         goto Error; // Cannot log anything if platform failed to initialize.
@@ -186,6 +259,9 @@ MsQuicLibraryInitialize(
 
     QUIC_DBG_ASSERT(US_TO_MS(QuicGetTimerResolution()) + 1 <= UINT8_MAX);
     MsQuicLib.TimerResolutionMs = (uint8_t)US_TO_MS(QuicGetTimerResolution()) + 1;
+
+    MsQuicLib.PerfCounterSamplesTime = QuicTimeUs64();
+    QuicZeroMemory(MsQuicLib.PerfCounterSamples, sizeof(MsQuicLib.PerfCounterSamples));
 
     QuicRandom(sizeof(MsQuicLib.ToeplitzHash.HashKey), MsQuicLib.ToeplitzHash.HashKey);
     QuicToeplitzHashInitialize(&MsQuicLib.ToeplitzHash);
@@ -206,9 +282,36 @@ MsQuicLibraryInitialize(
 
     MsQuicLibraryReadSettings(NULL); // NULL means don't update registrations.
 
-    QuicDispatchLockInitialize(&MsQuicLib.StatelessRetryKeysLock);
     QuicZeroMemory(&MsQuicLib.StatelessRetryKeys, sizeof(MsQuicLib.StatelessRetryKeys));
     QuicZeroMemory(&MsQuicLib.StatelessRetryKeysExpiration, sizeof(MsQuicLib.StatelessRetryKeysExpiration));
+
+    uint32_t CompatibilityListByteLength = 0;
+    QuicVersionNegotiationExtGenerateCompatibleVersionsList(
+        QUIC_VERSION_LATEST,
+        DefaultSupportedVersionsList,
+        ARRAYSIZE(DefaultSupportedVersionsList),
+        NULL,
+        &CompatibilityListByteLength);
+    MsQuicLib.DefaultCompatibilityList =
+        QUIC_ALLOC_NONPAGED(CompatibilityListByteLength);
+    if (MsQuicLib.DefaultCompatibilityList == NULL) {
+        QuicTraceLogError(
+            "Allocation of '%s' failed. (%u bytes)", "default compatibility list",
+            CompatibilityListByteLength);
+        Status = QUIC_STATUS_OUT_OF_MEMORY;
+        goto Error;
+    }
+    MsQuicLib.DefaultCompatibilityListLength = CompatibilityListByteLength / sizeof(uint32_t);
+    if (QUIC_FAILED(
+        QuicVersionNegotiationExtGenerateCompatibleVersionsList(
+            QUIC_VERSION_LATEST,
+            DefaultSupportedVersionsList,
+            ARRAYSIZE(DefaultSupportedVersionsList),
+            (uint8_t*)MsQuicLib.DefaultCompatibilityList,
+            &CompatibilityListByteLength))) {
+         goto Error;
+    }
+
 
     //
     // TODO: Add support for CPU hot swap/add.
@@ -241,6 +344,9 @@ MsQuicLibraryInitialize(
         goto Error;
     }
 
+    uint8_t ResetHashKey[20];
+    QuicRandom(sizeof(ResetHashKey), ResetHashKey);
+
     for (uint16_t i = 0; i < MsQuicLib.ProcessorCount; ++i) {
         QuicPoolInitialize(
             FALSE,
@@ -257,16 +363,35 @@ MsQuicLibraryInitialize(
             sizeof(QUIC_PACKET_SPACE),
             QUIC_POOL_TP,
             &MsQuicLib.PerProc[i].PacketSpacePool);
+
+        QuicLockInitialize(&MsQuicLib.PerProc[i].ResetTokenLock);
+        MsQuicLib.PerProc[i].ResetTokenHash = NULL;
         QuicZeroMemory(
             &MsQuicLib.PerProc[i].PerfCounters,
             sizeof(MsQuicLib.PerProc[i].PerfCounters));
     }
 
+    for (uint16_t i = 0; i < MsQuicLib.ProcessorCount; ++i) {
+        Status =
+            QuicHashCreate(
+                QUIC_HASH_SHA256,
+                ResetHashKey,
+                sizeof(ResetHashKey),
+                &MsQuicLib.PerProc[i].ResetTokenHash);
+        if (QUIC_FAILED(Status)) {
+            QuicTraceLogError(
+                "[ lib] ERROR, %u, %s.",
+                Status,
+                "Create reset token hash");
+            goto Error;
+        }
+    }
+
     Status =
         QuicDataPathInitialize(
             sizeof(QUIC_RECV_PACKET),
-            QuicBindingReceive,
-            QuicBindingUnreachable,
+            &DatapathCallbacks,
+            NULL,
             &MsQuicLib.Datapath);
     if (QUIC_FAILED(Status)) {
         QuicTraceLogError(
@@ -303,6 +428,8 @@ Error:
                 QuicPoolUninitialize(&MsQuicLib.PerProc[i].ConnectionPool);
                 QuicPoolUninitialize(&MsQuicLib.PerProc[i].TransportParamPool);
                 QuicPoolUninitialize(&MsQuicLib.PerProc[i].PacketSpacePool);
+               	QuicLockUninitialize(&MsQuicLib.PerProc[i].ResetTokenLock);
+                QuicHashFree(MsQuicLib.PerProc[i].ResetTokenHash);
             }
             QUIC_FREE(MsQuicLib.PerProc);
             MsQuicLib.PerProc = NULL;
@@ -311,11 +438,18 @@ Error:
             QuicStorageClose(MsQuicLib.Storage);
             MsQuicLib.Storage = NULL;
         }
+
+        if (MsQuicLib.DefaultCompatibilityList != NULL) {
+            QUIC_FREE(MsQuicLib.DefaultCompatibilityList);
+            MsQuicLib.DefaultCompatibilityList = NULL;
+        }	
+
         if (PlatformInitialized) {
             QuicPlatformUninitialize();
         }
     }
 
+    QuicSecureZeroMemory(ResetHashKey, sizeof(ResetHashKey));
     return Status;
 }
 
@@ -325,12 +459,6 @@ MsQuicLibraryUninitialize(
     void
     )
 {
-    //
-    // Clean up the data path first, which can continue to cause new connections
-    // to get created.
-    //
-    QuicDataPathUninitialize(MsQuicLib.Datapath);
-    MsQuicLib.Datapath = NULL;
 
     //
     // The library's stateless registration for processing half-opened
@@ -342,6 +470,20 @@ MsQuicLibraryUninitialize(
             (HQUIC)MsQuicLib.StatelessRegistration,
             QUIC_CONNECTION_SHUTDOWN_FLAG_SILENT,
             0);
+	}
+
+    //
+    //Clean up the data path first, which can continue to cause new connections
+    //to get created.
+    //          
+    QuicDataPathUninitialize(MsQuicLib.Datapath);
+    MsQuicLib.Datapath = NULL;
+
+    //
+    //Wait for the final clean up of everything in the stateless registration
+    //and then free it.
+    //          
+    if (MsQuicLib.StatelessRegistration != NULL) {
         MsQuicRegistrationClose(
             (HQUIC)MsQuicLib.StatelessRegistration);
         MsQuicLib.StatelessRegistration = NULL;
@@ -391,6 +533,8 @@ MsQuicLibraryUninitialize(
         QuicPoolUninitialize(&MsQuicLib.PerProc[i].ConnectionPool);
         QuicPoolUninitialize(&MsQuicLib.PerProc[i].TransportParamPool);
         QuicPoolUninitialize(&MsQuicLib.PerProc[i].PacketSpacePool);
+        QuicLockUninitialize(&MsQuicLib.PerProc[i].ResetTokenLock);
+        QuicHashFree(MsQuicLib.PerProc[i].ResetTokenHash);
     }
     QUIC_FREE(MsQuicLib.PerProc);
     MsQuicLib.PerProc = NULL;
@@ -399,9 +543,12 @@ MsQuicLibraryUninitialize(
         QuicKeyFree(MsQuicLib.StatelessRetryKeys[i]);
         MsQuicLib.StatelessRetryKeys[i] = NULL;
     }
-    QuicDispatchLockUninitialize(&MsQuicLib.StatelessRetryKeysLock);
+   
+    QuicSettingsCleanup(&MsQuicLib.Settings);
+    QUIC_FREE(MsQuicLib.DefaultCompatibilityList);
+    MsQuicLib.DefaultCompatibilityList = NULL;
 
-    QuicTraceLogVerbose("LibraryUninitialized: [lib] Uninitialized");
+    //QuicTraceLogVerbose("LibraryUninitialized: [lib] Uninitialized");
 
     QuicPlatformUninitialize();
 }
@@ -429,10 +576,10 @@ MsQuicAddRef(
     // Increment global ref count, and if this is the first ref, initialize all
     // the global library state.
     //
-    if (++MsQuicLib.RefCount == 1) {
+    if (++MsQuicLib.OpenRefCount == 1) {
         Status = MsQuicLibraryInitialize();
         if (QUIC_FAILED(Status)) {
-            MsQuicLib.RefCount--;
+            MsQuicLib.OpenRefCount--;
             goto Error;
         }
     }
@@ -458,10 +605,10 @@ MsQuicRelease(
     // last ref.
     //
 
-    QUIC_FRE_ASSERT(MsQuicLib.RefCount > 0);
+    QUIC_FRE_ASSERT(MsQuicLib.OpenRefCount > 0);
     QuicTraceLogVerbose("LibraryRelease: [lib] Release");
 
-    if (--MsQuicLib.RefCount == 0) {
+    if (--MsQuicLib.OpenRefCount == 0) {
         MsQuicLibraryUninitialize();
     }
 
@@ -635,6 +782,8 @@ QuicLibrarySetGlobalParam(
         if (!QuicSettingApply(
                 &MsQuicLib.Settings,
                 TRUE,
+				TRUE,
+				TRUE,
                 BufferLength,
                 (QUIC_SETTINGS*)Buffer)) {
             Status = QUIC_STATUS_INVALID_PARAMETER;
@@ -662,6 +811,41 @@ QuicLibrarySetGlobalParam(
         Status = QUIC_STATUS_SUCCESS;
         break;
 #endif
+
+#ifdef QUIC_TEST_ALLOC_FAILURES_ENABLED
+    case QUIC_PARAM_GLOBAL_ALLOC_FAIL_DENOMINATOR: {
+        if (BufferLength != sizeof(int32_t)) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+        int32_t Value;
+        QuicCopyMemory(&Value, Buffer, sizeof(Value));
+        if (Value < 0) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+        QuicSetAllocFailDenominator(Value);
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+    }
+
+    case QUIC_PARAM_GLOBAL_ALLOC_FAIL_CYCLE: {
+        if (BufferLength != sizeof(int32_t)) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+        int32_t Value;
+        QuicCopyMemory(&Value, Buffer, sizeof(Value));
+        if (Value < 0) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+        QuicSetAllocFailDenominator(-Value);
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+    }
+#endif
+
 
     default:
         Status = QUIC_STATUS_INVALID_PARAMETER;
@@ -789,6 +973,27 @@ QuicLibraryGetGlobalParam(
 
         Status = QUIC_STATUS_SUCCESS;
         break;
+
+    case QUIC_PARAM_GLOBAL_VERSION:
+
+        if (*BufferLength < sizeof(MsQuicLib.Version)) {
+            *BufferLength = sizeof(MsQuicLib.Version);
+            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+
+        if (Buffer == NULL) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        *BufferLength = sizeof(MsQuicLib.Version);
+        QuicCopyMemory(Buffer, MsQuicLib.Version, sizeof(MsQuicLib.Version));
+
+      	Status = QUIC_STATUS_SUCCESS;
+        break;
+
+
 
     default:
         Status = QUIC_STATUS_INVALID_PARAMETER;
@@ -1072,7 +1277,9 @@ MsQuicOpen(
     )
 {
     QUIC_STATUS Status;
+    BOOLEAN ReleaseRefOnFailure = FALSE;
 
+    MsQuicLibraryLoad();
     if (QuicApi == NULL) {
         QuicTraceLogVerbose(
             "LibraryMsQuicOpenNull: [api] MsQuicOpen, NULL");
@@ -1088,10 +1295,12 @@ MsQuicOpen(
         goto Exit;
     }
 
+    ReleaseRefOnFailure = TRUE;
+
     QUIC_API_TABLE* Api = QUIC_ALLOC_NONPAGED(sizeof(QUIC_API_TABLE));
     if (Api == NULL) {
         Status = QUIC_STATUS_OUT_OF_MEMORY;
-        goto Error;
+        goto Exit;
     }
 
     Api->SetContext = MsQuicSetContext;
@@ -1146,23 +1355,36 @@ MsQuicOpen(
 	Api->GetSockOpt = MsQuic_GetSocketOpt;
 	Api->MsQuicGetPeerName = MsQuic_GetPeerName;
 	Api->MsQuicGetSockName = MsQuic_GetSockName;
-	Api->MsQuicFcntl = MsQuic_Fcntl; 
     *QuicApi = Api;
 
-Error:
-
-    if (QUIC_FAILED(Status)) {
-        MsQuicRelease();
-    }
-
 Exit:
-
     QuicTraceLogVerbose(
         "LibraryMsQuicOpenExit: [api] MsQuicOpen, status=0x%x",
         Status);
 
+    if (QUIC_FAILED(Status)) {
+		if (ReleaseRefOnFailure) {
+        	MsQuicRelease();
+		}
+		MsQuicLibraryUnload();
+    }
     return Status;
 }
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QUIC_API
+MsQuicOpenVersion(
+    _In_ uint32_t Version,
+    _Out_ _Pre_defensive_ const void** QuicApi
+    )
+{
+    if (Version != 1) {
+        return QUIC_STATUS_NOT_SUPPORTED;
+    }
+    return MsQuicOpen((const QUIC_API_TABLE**)QuicApi);
+}
+
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
@@ -1172,10 +1394,10 @@ MsQuicClose(
     )
 {
     if (QuicApi != NULL) {
-        QuicTraceLogVerbose(
-            "LibraryMsQuicClose: [api] MsQuicClose");
+        QuicTraceLogVerbose("LibraryMsQuicClose: [api] MsQuicClose");
         QUIC_FREE(QuicApi);
         MsQuicRelease();
+        MsQuicLibraryUnload();
     }
 }
 
@@ -1203,7 +1425,7 @@ QuicLibraryLookupBinding(
 #endif
 
         QUIC_ADDR BindingLocalAddr;
-        QuicDataPathBindingGetLocalAddress(Binding->DatapathBinding, &BindingLocalAddr);
+        QuicBindingGetLocalAddress(Binding, &BindingLocalAddr);
 
         if (!QuicAddrCompare(LocalAddress, &BindingLocalAddr)) {
             continue;
@@ -1215,7 +1437,7 @@ QuicLibraryLookupBinding(
             }
 
             QUIC_ADDR BindingRemoteAddr;
-            QuicDataPathBindingGetRemoteAddress(Binding->DatapathBinding, &BindingRemoteAddr);
+            QuicBindingGetRemoteAddress(Binding, &BindingRemoteAddr);
             if (!QuicAddrCompare(RemoteAddress, &BindingRemoteAddr)) {
                 continue;
             }
@@ -1230,56 +1452,73 @@ QuicLibraryLookupBinding(
     return NULL;
 }
 
+
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QuicLibraryGetBinding(
-#ifdef QUIC_COMPARTMENT_ID
-    _In_ QUIC_COMPARTMENT_ID CompartmentId,
-#endif
-    _In_ BOOLEAN ShareBinding,
-    _In_ BOOLEAN ServerOwned,
-    _In_opt_ const QUIC_ADDR * LocalAddress,
-    _In_opt_ const QUIC_ADDR * RemoteAddress,
+    _In_ const QUIC_UDP_CONFIG* UdpConfig,
     _Out_ QUIC_BINDING** NewBinding
     )
 {
-    QUIC_STATUS Status = QUIC_STATUS_NOT_FOUND;
+    QUIC_STATUS Status;
     QUIC_BINDING* Binding;
     QUIC_ADDR NewLocalAddress;
+    BOOLEAN PortUnspecified = UdpConfig->LocalAddress == NULL || QuicAddrGetPort(UdpConfig->LocalAddress) == 0;
+    BOOLEAN ShareBinding = !!(UdpConfig->Flags & QUIC_SOCKET_FLAG_SHARE);
+    BOOLEAN ServerOwned = !!(UdpConfig->Flags & QUIC_SOCKET_SERVER_OWNED);
 
+#ifdef QUIC_SHARED_EPHEMERAL_WORKAROUND
     //
-    // First check to see if a binding already exists that matches the
-    // requested addresses.
+    //To work around the Linux bug where the stack sometimes gives us a "new"
+    //empheral port that matches an existing one, we retry, starting from that
+    //port and incrementing the number until we get one that works.
+    //             
+    BOOLEAN SharedEphemeralWorkAround = FALSE;
+SharedEphemeralRetry:
+#endif // QUIC_SHARED_EPHEMERAL_WORKAROUND
     //
-
-    if (LocalAddress == NULL) {
+    //First check to see if a binding already exists that matches the
+    //requested addresses.
+    //          
+#ifdef QUIC_SHARED_EPHEMERAL_WORKAROUND
+    if (PortUnspecified && !SharedEphemeralWorkAround) {
+#else
+    if (PortUnspecified) {
+#endif // QUIC_SHARED_EPHEMERAL_WORKAROUND
         //
-        // No specified local address, so we just always create a new binding.
-        //
+        //No specified local port, so we always create a new binding, and let
+        //the networking stack assign us a new ephemeral port. We can skip the
+        //lookup because the stack **should** always give us something new.
+        //                               
         goto NewBinding;
     }
 
+    Status = QUIC_STATUS_NOT_FOUND;
     QuicDispatchLockAcquire(&MsQuicLib.DatapathLock);
 
     Binding =
         QuicLibraryLookupBinding(
 #ifdef QUIC_COMPARTMENT_ID
-            CompartmentId,
+            UdpConfig->CompartmentId,
 #endif
-            LocalAddress,
-            RemoteAddress);
+            UdpConfig->LocalAddress,
+            UdpConfig->RemoteAddress);
     if (Binding != NULL) {
         if (!ShareBinding || Binding->Exclusive ||
             (ServerOwned != Binding->ServerOwned)) {
             //
-            // The binding does already exist, but cannot be shared with the
-            // requested configuration.
-            //
-            Status = QUIC_STATUS_INVALID_STATE;
+            //The binding does already exist, but cannot be shared with the
+            //requested configuration.
+            //                                  
+            QuicTraceLogInfo(
+                "[bind][%p] ERROR, %s.",
+                Binding,
+                "Binding already in use");
+            Status = QUIC_STATUS_ADDRESS_IN_USE;
         } else {
             //
-            // Match found and can be shared.
-            //
+            //Match found and can be shared.
+            //                      
             QUIC_DBG_ASSERT(Binding->RefCount > 0);
             Binding->RefCount++;
             *NewBinding = Binding;
@@ -1290,81 +1529,163 @@ QuicLibraryGetBinding(
     QuicDispatchLockRelease(&MsQuicLib.DatapathLock);
 
     if (Status != QUIC_STATUS_NOT_FOUND) {
+#ifdef QUIC_SHARED_EPHEMERAL_WORKAROUND
+        if (QUIC_FAILED(Status) && SharedEphemeralWorkAround) {
+            QUIC_DBG_ASSERT(UdpConfig->LocalAddress);
+            QuicAddrSetPort((QUIC_ADDR*)UdpConfig->LocalAddress, QuicAddrGetPort(UdpConfig->LocalAddress) + 1);
+            goto SharedEphemeralRetry;
+        }
+#endif // QUIC_SHARED_EPHEMERAL_WORKAROUND
         goto Exit;
     }
 
 NewBinding:
-
     //
-    // Create a new binding since there wasn't a match.
-    //
-
+    //Create a new binding since there wasn't a match.
+    //                                          
     Status =
         QuicBindingInitialize(
-#ifdef QUIC_COMPARTMENT_ID
-            CompartmentId,
-#endif
-            ShareBinding,
-            ServerOwned,
-            LocalAddress,
-            RemoteAddress,
+            UdpConfig,
             NewBinding);
+
+	uint32_t Count = 0;
+	if (ServerOwned)  ///////server set setsockopt 
+	{
+		QUIC_LISTENER* Listener = QUIC_CONTAINING_RECORD(NewBinding , QUIC_LISTENER, Binding);
+		if (Listener->Attribute != NULL)
+		{		
+			Count = Get_SockCount(MsQuicLib.Datapath, SERVER);
+            SetsockOpt((*NewBinding)->Socket, Count, Listener->Attribute->level, Listener->Attribute->optname,
+                Listener->Attribute->optval, Listener->Attribute->optlen);
+		} 
+	}
+	else ////////client set setsockopt
+	{
+		QUIC_PATH* path = QUIC_CONTAINING_RECORD(NewBinding, QUIC_PATH, Binding);
+		QUIC_CONNECTION* Connect = QUIC_CONTAINING_RECORD(path, QUIC_CONNECTION, Paths);	
+		if (Connect->Attribute != NULL)
+		{
+			Count = Get_SockCount(MsQuicLib.Datapath, CLIENT);
+			SetsockOpt((*NewBinding)->Socket, Count, Connect->Attribute->level, Connect->Attribute->optname, 
+				Connect->Attribute->optval, Connect->Attribute->optlen);
+            Connect->Attribute = NULL;
+		}
+	}
+
     if (QUIC_FAILED(Status)) {
+#ifdef QUIC_SHARED_EPHEMERAL_WORKAROUND
+        if (SharedEphemeralWorkAround) {
+            QUIC_DBG_ASSERT(UdpConfig->LocalAddress);
+            QuicAddrSetPort((QUIC_ADDR*)UdpConfig->LocalAddress, QuicAddrGetPort(UdpConfig->LocalAddress) + 1);
+            goto SharedEphemeralRetry;
+        }
+#endif // QUIC_SHARED_EPHEMERAL_WORKAROUND
         goto Exit;
     }
 
-    QuicDataPathBindingGetLocalAddress((*NewBinding)->DatapathBinding, &NewLocalAddress);
+    QuicBindingGetLocalAddress(*NewBinding, &NewLocalAddress);
 
     QuicDispatchLockAcquire(&MsQuicLib.DatapathLock);
-
     //
-    // Now that we created the binding, we need to insert it into the list of
-    // all bindings. But we need to make sure another thread didn't race this
-    // one and already create the binding.
-    //
-
-#if 0
-    Binding = QuicLibraryLookupBinding(&NewLocalAddress, RemoteAddress);
-#else
-    //
-    // Don't allow multiple sockets on the same local tuple currently. So just
-    // do collision detection based on local tuple.
-    //
-    Binding =
-        QuicLibraryLookupBinding(
+    //Now that we created the binding, we need to insert it into the list of
+    //all bindings. But we need to make sure another thread didn't race this
+    //one and already create the binding.
+    //                
+    if (QuicDataPathGetSupportedFeatures(MsQuicLib.Datapath) & QUIC_DATAPATH_FEATURE_LOCAL_PORT_SHARING) {
+        //
+        //The datapath supports multiple connected sockets on the same local
+        //tuple, so we need to do collision detection based on the whole
+        //4-tuple.
+        //                             
+        Binding =
+            QuicLibraryLookupBinding(
 #ifdef QUIC_COMPARTMENT_ID
-            CompartmentId,
+                UdpConfig->CompartmentId,
 #endif
-            &NewLocalAddress,
-            NULL);
+                &NewLocalAddress,
+                UdpConfig->RemoteAddress);
+    } else {
+        //
+        //The datapath does not supports multiple connected sockets on the same
+        //local tuple, so we just do collision detection based on the local
+        //tuple.
+        //                              
+        Binding =
+            QuicLibraryLookupBinding(
+#ifdef QUIC_COMPARTMENT_ID
+                UdpConfig->CompartmentId,
 #endif
+                &NewLocalAddress,
+                NULL);
+    }
+
     if (Binding != NULL) {
-        if (!Binding->Exclusive) {
+        if (!PortUnspecified && !Binding->Exclusive) {
             //
-            // Another thread got the binding first, but it's not exclusive.
-            //
+            //Another thread got the binding first, but it's not exclusive,
+            //and it's not what should be a new ephemeral port.
+            //                             
             QUIC_DBG_ASSERT(Binding->RefCount > 0);
             Binding->RefCount++;
         }
     } else {
         //
-        // No other thread beat us, insert this binding into the list.
-        //
+        //No other thread beat us, insert this binding into the list.
+        //             
         if (QuicListIsEmpty(&MsQuicLib.Bindings)) {
             QuicTraceLogInfo(
-                "LibraryInUse: [lib] Now in use.");
+                "[ lib] Now in use.");
             MsQuicLib.InUse = TRUE;
         }
+        (*NewBinding)->RefCount++;
         QuicListInsertTail(&MsQuicLib.Bindings, &(*NewBinding)->Link);
     }
 
     QuicDispatchLockRelease(&MsQuicLib.DatapathLock);
 
     if (Binding != NULL) {
-        if (Binding->Exclusive) {
-            Status = QUIC_STATUS_INVALID_STATE;
+        if (PortUnspecified) {
+            //
+            //The datapath somehow returned us a "new" ephemeral socket that
+            //already matched one of our existing ones. We've seen this on
+            //Linux occasionally. This shouldn't happen, but it does.
+            QuicTraceLogError(
+                "[bind][%p] ERROR, %s.",
+                *NewBinding,
+                "Binding ephemeral port reuse encountered");
+            QuicBindingUninitialize(*NewBinding);
+            *NewBinding = NULL;
+
+#ifdef QUIC_SHARED_EPHEMERAL_WORKAROUND
+            //
+            //Use the invalid address as a starting point to search for a new
+            //one.
+            //          
+            SharedEphemeralWorkAround = TRUE;
+            ((QUIC_UDP_CONFIG*)UdpConfig)->LocalAddress = &NewLocalAddress;
+            QuicAddrSetPort((QUIC_ADDR*)UdpConfig->LocalAddress, QuicAddrGetPort(UdpConfig->LocalAddress) + 1);
+            goto SharedEphemeralRetry;
+#else
+            Status = QUIC_STATUS_INTERNAL_ERROR;
+#endif // QUIC_SHARED_EPHEMERAL_WORKAROUND
+
+        } else if (Binding->Exclusive) {
+            QuicTraceLogError(
+                "[bind][%p] ERROR, %s.",
+                Binding,
+                "Binding already in use");
+            QuicBindingUninitialize(*NewBinding);
+            *NewBinding = NULL;
+#ifdef QUIC_SHARED_EPHEMERAL_WORKAROUND
+            if (SharedEphemeralWorkAround) {
+                QUIC_DBG_ASSERT(UdpConfig->LocalAddress);
+                QuicAddrSetPort((QUIC_ADDR*)UdpConfig->LocalAddress, QuicAddrGetPort(UdpConfig->LocalAddress) + 1);
+                goto SharedEphemeralRetry;
+            }
+#endif // QUIC_SHARED_EPHEMERAL_WORKAROUND
+            Status = QUIC_STATUS_ADDRESS_IN_USE;
+
         } else {
-            (*NewBinding)->RefCount--;
             QuicBindingUninitialize(*NewBinding);
             *NewBinding = Binding;
             Status = QUIC_STATUS_SUCCESS;
@@ -1466,7 +1787,7 @@ _IRQL_requires_max_(DISPATCH_LEVEL)
 QUIC_WORKER*
 QUIC_NO_SANITIZE("implicit-conversion")
 QuicLibraryGetWorker(
-    _In_ const _In_ QUIC_RECV_DATAGRAM* Datagram
+    _In_ const _In_ QUIC_RECV_DATA* Datagram
     )
 {
     QUIC_DBG_ASSERT(MsQuicLib.StatelessRegistration != NULL);
@@ -1476,6 +1797,7 @@ QuicLibraryGetWorker(
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
+_Function_class_(QUIC_TRACE_RUNDOWN_CALLBACK)
 void
 QuicTraceRundown(
     void
@@ -1487,7 +1809,7 @@ QuicTraceRundown(
 
     QuicLockAcquire(&MsQuicLib.Lock);
 
-    if (MsQuicLib.RefCount > 0) {
+    if (MsQuicLib.OpenRefCount > 0) {
         QuicTraceLogVerbose(
             "LibraryRundown: [lib] Rundown, PartitionCount=%u DatapathFeatures=%u",
             MsQuicLib.PartitionCount,
@@ -1535,22 +1857,25 @@ QuicLibraryGetStatelessRetryKeyForTimestamp(
         // Timestamp is before the begining of the previous key's validity window.
         //
         return NULL;
-    } else if (Timestamp < MsQuicLib.StatelessRetryKeysExpiration[!MsQuicLib.CurrentStatelessRetryKey]) {
+    } 
+
+	if (Timestamp < MsQuicLib.StatelessRetryKeysExpiration[!MsQuicLib.CurrentStatelessRetryKey]) {
         if (MsQuicLib.StatelessRetryKeys[!MsQuicLib.CurrentStatelessRetryKey] == NULL) {
             return NULL;
         }
         return MsQuicLib.StatelessRetryKeys[!MsQuicLib.CurrentStatelessRetryKey];
-    } else if (Timestamp < MsQuicLib.StatelessRetryKeysExpiration[MsQuicLib.CurrentStatelessRetryKey]) {
+    } 
+
+	if (Timestamp < MsQuicLib.StatelessRetryKeysExpiration[MsQuicLib.CurrentStatelessRetryKey]) {
         if (MsQuicLib.StatelessRetryKeys[MsQuicLib.CurrentStatelessRetryKey] == NULL) {
             return NULL;
         }
         return MsQuicLib.StatelessRetryKeys[MsQuicLib.CurrentStatelessRetryKey];
-    } else {
-        //
-        // Timestamp is after the end of the latest key's validity window.
-        //
-        return NULL;
-    }
+    } 
+    //
+    // Timestamp is after the end of the latest key's validity window.
+    //
+    return NULL;
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -1598,3 +1923,79 @@ QuicLibraryGetCurrentStatelessRetryKey(
 
     return NewKey;
 }
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicLibraryOnHandshakeConnectionAdded(
+    void
+    )
+{
+    InterlockedExchangeAdd64(
+        (int64_t*)&MsQuicLib.CurrentHandshakeMemoryUsage,
+        (int64_t)QUIC_CONN_HANDSHAKE_MEMORY_USAGE);
+    QuicLibraryEvaluateSendRetryState();
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicLibraryOnHandshakeConnectionRemoved(
+    void
+    )
+{
+    InterlockedExchangeAdd64(
+        (int64_t*)&MsQuicLib.CurrentHandshakeMemoryUsage,
+        -1 * (int64_t)QUIC_CONN_HANDSHAKE_MEMORY_USAGE);
+    QuicLibraryEvaluateSendRetryState();
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicLibraryEvaluateSendRetryState(
+    void
+    )
+{
+    BOOLEAN NewSendRetryState =
+        MsQuicLib.CurrentHandshakeMemoryUsage >= MsQuicLib.HandshakeMemoryLimit;
+
+    if (NewSendRetryState != MsQuicLib.SendRetryEnabled) {
+        MsQuicLib.SendRetryEnabled = NewSendRetryState;
+        QuicTraceLogInfo(
+            "[ lib] New SendRetryEnabled state, %hhu",
+            NewSendRetryState);
+    }
+}
+
+QUIC_STATIC_ASSERT(
+    QUIC_HASH_SHA256_SIZE >= QUIC_STATELESS_RESET_TOKEN_LENGTH,
+    "Stateless reset token must be shorter than hash size used");
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QuicLibraryGenerateStatelessResetToken(
+    _In_reads_(MsQuicLib.CidTotalLength)
+        const uint8_t* const CID,
+    _Out_writes_all_(QUIC_STATELESS_RESET_TOKEN_LENGTH)
+        uint8_t* ResetToken
+    )
+{
+    uint8_t HashOutput[QUIC_HASH_SHA256_SIZE];
+    uint32_t CurProcIndex = QuicProcCurrentNumber();
+    QuicLockAcquire(&MsQuicLib.PerProc[CurProcIndex].ResetTokenLock);
+    QUIC_STATUS Status =
+        QuicHashCompute(
+            MsQuicLib.PerProc[CurProcIndex].ResetTokenHash,
+            CID,
+            MsQuicLib.CidTotalLength,
+            sizeof(HashOutput),
+            HashOutput);
+    QuicLockRelease(&MsQuicLib.PerProc[CurProcIndex].ResetTokenLock);
+    if (QUIC_SUCCEEDED(Status)) {
+        QuicCopyMemory(
+            ResetToken,
+            HashOutput,
+            QUIC_STATELESS_RESET_TOKEN_LENGTH);
+    }
+    return Status;
+}
+
+

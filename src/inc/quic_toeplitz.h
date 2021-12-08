@@ -7,6 +7,11 @@
 
 #pragma once
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+
 #define NIBBLES_PER_BYTE    2
 #define BITS_PER_NIBBLE     4
 
@@ -67,3 +72,47 @@ QuicToeplitzHashCompute(
     _In_ uint32_t HashInputLength,
     _In_ uint32_t HashInputOffset
     );
+
+
+//
+// Computes the Toeplitz hash of a QUIC address.
+//
+inline
+void
+QuicToeplitzHashComputeAddr(
+    _In_ const QUIC_TOEPLITZ_HASH* Toeplitz,
+    _In_ const QUIC_ADDR* Addr,
+    _Inout_ uint32_t* Key,
+    _Out_ uint32_t* Offset
+    )
+{
+    if (QuicAddrGetFamily(Addr) == QUIC_ADDRESS_FAMILY_INET) {
+        *Key ^=
+            QuicToeplitzHashCompute(
+                Toeplitz,
+                ((uint8_t*)Addr) + QUIC_ADDR_V4_PORT_OFFSET,
+                2, 0);
+        *Key ^=
+          	QuicToeplitzHashCompute(
+                Toeplitz,
+                ((uint8_t*)Addr) + QUIC_ADDR_V4_IP_OFFSET,
+                4, 2);
+        *Offset = 2 + 4;
+    } else {
+        *Key ^=
+            QuicToeplitzHashCompute(
+                Toeplitz,
+                ((uint8_t*)Addr) + QUIC_ADDR_V6_PORT_OFFSET,
+                2, 0);
+        *Key ^=
+            QuicToeplitzHashCompute(
+                Toeplitz,
+                ((uint8_t*)Addr) + QUIC_ADDR_V6_IP_OFFSET,
+                16, 2);
+        *Offset = 2 + 16;
+    }
+}
+
+#if defined(__cplusplus)
+}
+#endif

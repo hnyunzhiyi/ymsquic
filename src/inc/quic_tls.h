@@ -24,14 +24,35 @@ extern "C" {
 typedef struct QUIC_SEC_CONFIG QUIC_SEC_CONFIG;
 typedef struct QUIC_CONNECTION QUIC_CONNECTION;
 typedef struct QUIC_TLS QUIC_TLS;
+typedef struct QUIC_TLS_SECRETS QUIC_TLS_SECRETS;
 
 #define TLS_EXTENSION_TYPE_APPLICATION_LAYER_PROTOCOL_NEGOTIATION   0x0010  // Host Byte Order
-#define TLS_EXTENSION_TYPE_QUIC_TRANSPORT_PARAMETERS                0xffa5  // Host Byte Order
+#define TLS_EXTENSION_TYPE_QUIC_TRANSPORT_PARAMETERS_DRAFT          0xffa5  // Host Byte Order
+#define TLS_EXTENSION_TYPE_QUIC_TRANSPORT_PARAMETERS                0x0039  // Host Byte Order
+
+//
+#define TLS_SMALL_ALPN_BUFFER_SIZE  16
 
 //
 // The size of the header required by the TLS layer.
 //
 extern uint16_t QuicTlsTPHeaderSize;
+
+typedef enum QUIC_TLS_ALERT_CODES {
+    QUIC_TLS_ALERT_CODE_HANDSHAKE_FAILURE = 40,
+    QUIC_TLS_ALERT_CODE_BAD_CERTIFICATE = 42,
+    QUIC_TLS_ALERT_CODE_CERTIFICATE_EXPIRED = 45,
+    QUIC_TLS_ALERT_CODE_UNKNOWN_CA = 48,
+    QUIC_TLS_ALERT_CODE_INTERNAL_ERROR = 80,
+    QUIC_TLS_ALERT_CODE_USER_CANCELED = 90,
+    QUIC_TLS_ALERT_CODE_NO_APPLICATION_PROTOCOL = 120,
+} QUIC_TLS_ALERT_CODES;
+
+typedef enum QUIC_TLS_CREDENTIAL_FLAGS {
+    QUIC_TLS_CREDENTIAL_FLAG_NONE                 = 0x0000,
+    QUIC_TLS_CREDENTIAL_FLAG_DISABLE_RESUMPTION   = 0x0001,   // Server only
+} QUIC_TLS_CREDENTIAL_FLAGS;
+
 
 //
 // Callback for indicating process can be completed.
@@ -75,6 +96,40 @@ BOOLEAN
 
 typedef QUIC_TLS_RECEIVE_TICKET_CALLBACK *QUIC_TLS_RECEIVE_TICKET_CALLBACK_HANDLER;
 
+
+//
+// Callback for indicating the peer certificate is ready for custom validation.
+//
+typedef
+_IRQL_requires_max_(PASSIVE_LEVEL)
+BOOLEAN
+(QUIC_TLS_PEER_CERTIFICATE_RECEIVED_CALLBACK)(
+    _In_ QUIC_CONNECTION* Connection,
+    _In_ QUIC_CERTIFICATE* Certificate,
+    _In_ QUIC_CERTIFICATE_CHAIN* Chain,
+    _In_ uint32_t DeferredErrorFlags,
+    _In_ QUIC_STATUS DeferredStatus
+    );
+
+typedef QUIC_TLS_PEER_CERTIFICATE_RECEIVED_CALLBACK *QUIC_TLS_PEER_CERTIFICATE_RECEIVED_CALLBACK_HANDLER;
+
+typedef struct QUIC_TLS_CALLBACKS {
+    //
+    //Invoked when QUIC transport parameters are received.
+    //       
+	QUIC_TLS_RECEIVE_TP_CALLBACK_HANDLER ReceiveTP;
+    //
+    //Invoked when a session ticket is received.
+    //     
+    QUIC_TLS_RECEIVE_TICKET_CALLBACK_HANDLER ReceiveTicket;
+    //
+    //Invokved only in the custom certificate validation scenario, when the
+    //peer's certificate has been received and is ready for validation.
+    //           
+    QUIC_TLS_PEER_CERTIFICATE_RECEIVED_CALLBACK_HANDLER CertificateReceived;
+
+} QUIC_TLS_CALLBACKS;
+
 //
 // The input configuration for creation of a TLS context.
 //
@@ -101,6 +156,10 @@ typedef struct QUIC_TLS_CONFIG {
     uint16_t AlpnBufferLength;
 
     //
+    //TLS Extension code type for transport parameters.
+    //        
+	uint16_t TPType;
+    //
     // Name of the server we are connecting to (client side only).
     //
     const char* ServerName;
@@ -119,26 +178,24 @@ typedef struct QUIC_TLS_CONFIG {
     const uint8_t* LocalTPBuffer;
     uint32_t LocalTPLength;
 
+#ifdef QUIC_TLS_SECRETS_SUPPORT
     //
-    // Invoked for the completion of process calls that were pending.
+    // Storage for TLS traffic secrets when CXPLAT_TLS_SECRETS_SUPPORT is enabled,
+    // and the connection has the parameter set to enable logging.
     //
-    QUIC_TLS_PROCESS_COMPLETE_CALLBACK_HANDLER ProcessCompleteCallback;
-
+    QUIC_TLS_SECRETS* TlsSecrets;
+#endif
     //
-    // Invoked when QUIC transport parameters are received.
-    //
-    QUIC_TLS_RECEIVE_TP_CALLBACK_HANDLER ReceiveTPCallback;
-
-    //
-    // Invoked when a resumption ticket is received.
-    //
-    QUIC_TLS_RECEIVE_TICKET_CALLBACK_HANDLER ReceiveResumptionCallback;
+   QUIC_TLS_PROCESS_COMPLETE_CALLBACK_HANDLER ProcessCompleteCallback;
+   QUIC_TLS_RECEIVE_TP_CALLBACK_HANDLER ReceiveTPCallback;
+   QUIC_TLS_RECEIVE_TICKET_CALLBACK_HANDLER ReceiveResumptionCallback;
 
 } QUIC_TLS_CONFIG;
 
 //
 // Different possible results after writing new TLS data.
 //
+
 typedef enum QUIC_TLS_RESULT_FLAGS {
 
     QUIC_TLS_RESULT_CONTINUE            = 0x0001, // Needs immediate call again. (Used internally to schannel)
@@ -153,11 +210,12 @@ typedef enum QUIC_TLS_RESULT_FLAGS {
 
 } QUIC_TLS_RESULT_FLAGS;
 
-typedef enum QUIC_TLS_DATA_TYPE {
 
+
+
+typedef enum QUIC_TLS_DATA_TYPE {
     QUIC_TLS_CRYPTO_DATA,
     QUIC_TLS_TICKET_DATA
-
 } QUIC_TLS_DATA_TYPE;
 
 //
@@ -240,6 +298,15 @@ typedef struct QUIC_TLS_PROCESS_STATE {
     //
     uint8_t* Buffer;
 
+
+    //
+    //A small buffer to hold the final negotiated ALPN of the connection,
+    //assuming it fits in TLS_SMALL_ALPN_BUFFER_SIZE bytes. NegotiatedAlpn
+    //with either point to this, or point to allocated memory.
+    //          	
+	//uint8_t SmallAlpnBuffer[TLS_SMALL_ALPN_BUFFER_SIZE];
+
+
     //
     // The final negotiated ALPN of the connection. The first byte is the length
     // followed by that many bytes for actual ALPN.
@@ -292,6 +359,19 @@ QuicTlsSecConfigDelete(
         QUIC_SEC_CONFIG* SecurityConfig
     );
 
+
+//
+// Sets a NST ticket key for a security configuration.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+QuicTlsSecConfigSetTicketKeys(
+    _In_ QUIC_SEC_CONFIG* SecurityConfig,
+    _In_reads_(KeyCount) QUIC_TICKET_KEY_CONFIG* KeyConfig,
+    _In_ uint8_t KeyCount
+    );
+
+
 //
 // Initializes a TLS context.
 //
@@ -310,15 +390,6 @@ _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicTlsUninitialize(
     _In_opt_ QUIC_TLS* TlsContext
-    );
-
-//
-// Resets an existing TLS interface.
-//
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-QuicTlsReset(
-    _In_ QUIC_TLS* TlsContext
     );
 
 //
@@ -342,9 +413,7 @@ QuicTlsProcessData(
     _Inout_ QUIC_TLS_PROCESS_STATE* State
     );
 
-//
-// Called when in response to receiving a process completed callback.
-//
+
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_TLS_RESULT_FLAGS
 QuicTlsProcessDataComplete(

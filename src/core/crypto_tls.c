@@ -1471,3 +1471,49 @@ Exit:
 
     return Result;
 }
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+QUIC_STATUS
+QuicCryptoTlsCopyTransportParameters(
+    _In_ const QUIC_TRANSPORT_PARAMETERS* Source,
+    _In_ QUIC_TRANSPORT_PARAMETERS* Destination
+    )
+{
+    *Destination = *Source;
+    if (Source->Flags & QUIC_TP_FLAG_VERSION_NEGOTIATION) {
+        Destination->VersionInfo =
+            QUIC_ALLOC_NONPAGED((size_t)Source->VersionInfoLength);
+        if (Destination->VersionInfo == NULL) {
+            QuicTraceLogError(
+                "Allocation of '%s' failed. (%u bytes)",
+                "Version Negotiation Info",
+                Source->VersionInfoLength);
+            return QUIC_STATUS_OUT_OF_MEMORY;
+        }
+        Destination->Flags |= QUIC_TP_FLAG_VERSION_NEGOTIATION;
+        QuicCopyMemory(
+            (uint8_t*)Destination->VersionInfo,
+            Source->VersionInfo,
+            (size_t)Source->VersionInfoLength);
+        Destination->VersionInfoLength = Source->VersionInfoLength;
+    }
+    return QUIC_STATUS_SUCCESS;
+}
+
+
+
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicCryptoTlsCleanupTransportParameters(
+    _In_ QUIC_TRANSPORT_PARAMETERS* TransportParams
+    )
+{
+    if (TransportParams->Flags & QUIC_TP_FLAG_VERSION_NEGOTIATION) {
+        QUIC_FREE(TransportParams->VersionInfo);
+        TransportParams->VersionInfo = NULL;
+        TransportParams->VersionInfoLength = 0;
+        TransportParams->Flags &= ~QUIC_TP_FLAG_VERSION_NEGOTIATION;
+    }
+}
+

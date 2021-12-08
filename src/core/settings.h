@@ -32,11 +32,25 @@ BOOLEAN
 QuicSettingApply(
     _Inout_ QUIC_SETTINGS* Destination,
     _In_ BOOLEAN OverWrite,
-    _In_range_(FIELD_OFFSET(QUIC_SETTINGS, MaxBytesPerKey), UINT32_MAX)
-        uint32_t SourceSize,
-    _In_reads_bytes_(SourceSize)
+    _In_ BOOLEAN CopyExternalToInternal,
+    _In_ BOOLEAN AllowMtuChanges,
+    _In_range_(FIELD_OFFSET(QUIC_SETTINGS, DesiredVersionsList), UINT32_MAX)
+        uint32_t NewSettingsSize,
+    _In_reads_bytes_(NewSettingsSize)
         const QUIC_SETTINGS* Source
     );
+
+
+//
+// Cleans up any memory allocated on the Settings.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicSettingsCleanup(
+    _In_ QUIC_SETTINGS* Settings
+    );
+
+
 
 //
 // Loads the settings from storage, if not already set by the app.
@@ -60,7 +74,7 @@ QuicSettingsDump(
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicSettingsDumpNew(
-    _In_range_(FIELD_OFFSET(QUIC_SETTINGS, MaxBytesPerKey), UINT32_MAX)
+    _In_range_(FIELD_OFFSET(QUIC_SETTINGS, DesiredVersionsList), UINT32_MAX)
         uint32_t SettingsSize,
     _In_reads_bytes_(SettingsSize)
         const QUIC_SETTINGS* Settings

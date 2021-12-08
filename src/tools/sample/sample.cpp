@@ -229,7 +229,7 @@ ServerLoadConfiguration(
     Settings.IsSet.PeerBidiStreamCount = TRUE;
 
     QUIC_CREDENTIAL_CONFIG_HELPER Config;
-    memset(&Config, 0, sizeof(Config));
+	QuicZeroMemory(&Config, sizeof(Config));
     Config.CredConfig.Flags = QUIC_CREDENTIAL_FLAG_NONE;
 
     const char* Cert;
@@ -441,7 +441,7 @@ ClientLoadConfiguration(
     Settings.IsSet.IdleTimeoutMs = TRUE;
 
     QUIC_CREDENTIAL_CONFIG CredConfig;
-    memset(&CredConfig, 0, sizeof(CredConfig));
+	QuicZeroMemory(&CredConfig, sizeof(CredConfig));
     CredConfig.Type = QUIC_CREDENTIAL_TYPE_NONE;
     CredConfig.Flags = QUIC_CREDENTIAL_FLAG_CLIENT;
     if (Unsecure) {
@@ -483,7 +483,7 @@ RunClient(
     if ((ResumptionTicketString = GetValue(argc, argv, "ticket")) != nullptr) {
         uint8_t ResumptionTicket[1024];
         uint16_t TicketLength = (uint16_t)DecodeHexBuffer(ResumptionTicketString, sizeof(ResumptionTicket), ResumptionTicket);
-        if (QUIC_FAILED(Status = MsQuic->SetParam(Connection, QUIC_PARAM_LEVEL_CONNECTION, QUIC_PARAM_CONN_RESUMPTION_STATE, TicketLength, ResumptionTicket))) {
+        if (QUIC_FAILED(Status = MsQuic->SetParam(Connection, QUIC_PARAM_LEVEL_CONNECTION, QUIC_PARAM_CONN_RESUMPTION_TICKET, TicketLength, ResumptionTicket))) {
             printf("SetParam(QUIC_PARAM_CONN_RESUMPTION_TICKET) failed, 0x%x!\n", Status);
             goto Error;
         }

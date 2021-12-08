@@ -47,6 +47,9 @@ Environment:
 #include <msquic_winkernel.h>
 #pragma warning(pop)
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
 #if (NTDDI_VERSION >= NTDDI_WIN2K) // Copied from zwapi_x.h.
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NTSYSAPI

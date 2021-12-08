@@ -4,18 +4,6 @@
     Licensed under the MIT License.
 
 --*/
-
-_IRQL_requires_max_(PASSIVE_LEVEL)
-QUIC_STATUS
-QUIC_API
-MsQuicGetConnectParamPort( _In_ _Pre_defensive_ HQUIC ConnectID);
-
-_IRQL_requires_max_(PASSIVE_LEVEL)
-QUIC_STATUS
-QUIC_API
-MsQuicCloseList( _In_ _Pre_defensive_ HQUIC Connection);
-
-
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QUIC_API
@@ -30,14 +18,14 @@ void
 QUIC_API
 MsQuicRegistrationClose(
     _In_ _Pre_defensive_ __drv_freesMem(Mem)
-        HQUIC Registration
+        HQUIC Handle
     );
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 void
 QUIC_API
 MsQuicRegistrationShutdown(
-    _In_ _Pre_defensive_ HQUIC Registration,
+    _In_ _Pre_defensive_ HQUIC Handle,
     _In_ QUIC_CONNECTION_SHUTDOWN_FLAGS Flags,
     _In_ _Pre_defensive_ QUIC_UINT62 ErrorCode
     );
@@ -63,7 +51,7 @@ void
 QUIC_API
 MsQuicConfigurationClose(
     _In_ _Pre_defensive_ __drv_freesMem(Mem)
-        HQUIC Configuration
+        HQUIC Handle
     );
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -138,15 +126,8 @@ MsQuicConnectionShutdown(
     _In_ QUIC_CONNECTION_SHUTDOWN_FLAGS Flags,
     _In_ _Pre_defensive_ QUIC_UINT62 ErrorCode
     );
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-QUIC_API
-MsQuicStreamClose(
-    _In_ _Pre_defensive_ __drv_freesMem(Mem)
-        HQUIC Handle
-    );
 
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(DISPATCH_LEVEL)
 QUIC_STATUS
 QUIC_API
 MsQuicConnectionStart(
@@ -190,6 +171,21 @@ MsQuicStreamOpen(
     );
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QUIC_API
+MsQuic_CloseConnect(_In_ CHANNEL_DATA* Channel);
+
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QUIC_API
+MsQuicStreamClose(
+    _In_ _Pre_defensive_ __drv_freesMem(Mem)
+        HQUIC Handle
+    );
+
+_When_(Flags & QUIC_STREAM_START_FLAG_ASYNC, _IRQL_requires_max_(DISPATCH_LEVEL))
+_When_(!(Flags & QUIC_STREAM_START_FLAG_ASYNC), _IRQL_requires_max_(PASSIVE_LEVEL))
 QUIC_STATUS
 QUIC_API
 MsQuicStreamStart(
@@ -275,12 +271,12 @@ MsQuicDatagramSend(
     );
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
-void
+int
 QUIC_API
 MsQuic_SetSocketOpt(_In_ _Pre_defensive_ CHANNEL_DATA* Channel, 
 	_In_ int Level, 
 	_In_ int Optname, 
-	_In_ const void *Optval,
+	_In_ void *Optval,
 	_In_ socklen_t Optlen);
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -289,7 +285,7 @@ QUIC_API
 MsQuic_GetSocketOpt(_In_ _Pre_defensive_ CHANNEL_DATA* Channel,
 	 _In_ int Level,
      _In_ int Optname,
-	 _Inout_  void *Optval,
+	 _Inout_ void *Optval,
 	 _Inout_ socklen_t *Optlen);
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -409,7 +405,7 @@ listenerCallback(
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QUIC_API
-MsQuic_Listen(_In_ CHANNEL_DATA* Channel);
+MsQuic_Listen(_In_ CHANNEL_DATA* Channel, _In_ int Backlog);
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void*
@@ -429,11 +425,4 @@ QUIC_API
 MsQuic_GetSockName(_In_ CHANNEL_DATA* Channel, 
 	_Inout_ struct sockaddr* LocalAddr, 
 	_In_ socklen_t* addrlen);
-
-_IRQL_requires_max_(PASSIVE_LEVEL)
-int
-QUIC_API
-MsQuic_Fcntl(_In_ CHANNEL_DATA* Channel,
-	 _In_ int Cmd,
-	 _In_ long Arg);
 

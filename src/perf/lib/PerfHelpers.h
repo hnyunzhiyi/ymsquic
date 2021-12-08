@@ -45,7 +45,6 @@ QuicMainStart(
 extern
 QUIC_STATUS
 QuicMainStop(
-    _In_ int Timeout
     );
 
 extern volatile int BufferCurrent;

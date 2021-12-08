@@ -223,7 +223,7 @@ LinkEntryToType(
 
 struct SingleListEntry : Struct {
 
-    SingleListEntry(ULONG64 addr) : Struct("msquic!QUIC_SINGLE_LIST_ENTRY", addr) {
+    SingleListEntry(ULONG64 addr) : Struct("msquic!QUIC_SLIST_ENTRY", addr) {
     }
 
     ULONG64 Next() {
@@ -989,14 +989,15 @@ typedef enum QUIC_OPERATION_TYPE {
     QUIC_OPER_TYPE_TRACE_RUNDOWN,       // A trace rundown was triggered.
 
     //
-    // All stateless operations follow.
-    //
-
+    //All stateless operations follow.
+    //     
     QUIC_OPER_TYPE_VERSION_NEGOTIATION, // A version negotiation needs to be sent.
     QUIC_OPER_TYPE_STATELESS_RESET,     // A stateless reset needs to be sent.
     QUIC_OPER_TYPE_RETRY,               // A retry needs to be sent.
 
 } QUIC_OPERATION_TYPE;
+
+
 
 struct Operation : Struct {
 

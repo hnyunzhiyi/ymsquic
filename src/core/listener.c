@@ -65,12 +65,13 @@ MsQuicListenerOpen(
 
     BOOLEAN Result = QuicRundownAcquire(&Registration->Rundown);
     QUIC_DBG_ASSERT(Result); UNREFERENCED_PARAMETER(Result);
-
+	
     QuicTraceLogVerbose(
         "ListenerCreated: [list][%p] Created, Registration=%p",
         Listener,
         Listener->Registration);
     *NewListener = (HQUIC)Listener;
+
     Status = QUIC_STATUS_SUCCESS;
 
 Error:
@@ -187,7 +188,6 @@ MsQuicListenerStart(
         goto Exit;
     }
 
-    Status = QUIC_STATUS_SUCCESS;
 #pragma prefast(suppress: __WARNING_25024, "Pointer cast already validated.")
     Listener = (QUIC_LISTENER*)Handle;
 
@@ -239,19 +239,31 @@ MsQuicListenerStart(
     QuicAddrSetPort(&BindingLocalAddress,
         PortUnspecified ? 0 : QuicAddrGetPort(LocalAddress));
 
-    QuicLibraryOnListenerRegistered(Listener);
+    if (!QuicLibraryOnListenerRegistered(Listener)) {
+        Status = QUIC_STATUS_OUT_OF_MEMORY;
+        goto Error;
+    }
+
+    QUIC_UDP_CONFIG UdpConfig = {0};
+    UdpConfig.LocalAddress = &BindingLocalAddress;
+    UdpConfig.RemoteAddress = NULL;
+    UdpConfig.Flags = QUIC_SOCKET_FLAG_SHARE | QUIC_SOCKET_SERVER_OWNED; // Listeners always share the binding.
+    UdpConfig.InterfaceIndex = 0;
+#ifdef QUIC_COMPARTMENT_ID
+    UdpConfig.CompartmentId = QuicCompartmentIdGetCurrent();
+#endif
+#ifdef QUIC_OWNING_PROCESS
+    UdpConfig.OwningProcess = NULL;     // Owning process not supported for listeners.
+#endif
 
     QUIC_TEL_ASSERT(Listener->Binding == NULL);
     Status =
         QuicLibraryGetBinding(
-#ifdef QUIC_COMPARTMENT_ID
-            QuicCompartmentIdGetCurrent(),
-#endif
-            TRUE,           // Listeners always share the binding.
-            TRUE,
-            &BindingLocalAddress,
-            NULL,
+            &UdpConfig,
             &Listener->Binding);
+
+
+
     if (QUIC_FAILED(Status)) {
         QuicTraceLogError(
             "ListenerErrorStatus: [list][%p] ERROR, %u, %s.",
@@ -274,8 +286,8 @@ MsQuicListenerStart(
     }
 
     if (PortUnspecified) {
-        QuicDataPathBindingGetLocalAddress(
-            Listener->Binding->DatapathBinding,
+        QuicBindingGetLocalAddress(
+            Listener->Binding,
             &BindingLocalAddress);
         QuicAddrSetPort(
             &Listener->LocalAddress,
@@ -470,6 +482,7 @@ QuicListenerClaimConnection(
     //
 
     Connection->State.ListenerAccepted = TRUE;
+    Connection->State.ExternalOwner = TRUE;
 
     QUIC_LISTENER_EVENT Event;
     Event.Type = QUIC_LISTENER_EVENT_NEW_CONNECTION;
@@ -487,6 +500,10 @@ QuicListenerClaimConnection(
     QuicListenerDetachSilo();
 
     if (QUIC_FAILED(Status)) {
+        QUIC_FRE_ASSERTMSG(
+            !Connection->State.HandleClosed,
+            "App MUST not close and reject connection!");
+        Connection->State.ExternalOwner = FALSE;
         QuicTraceLogError(
             "ListenerErrorStatus: [list][%p] ERROR, %u, %s.",
             Listener,
@@ -503,13 +520,13 @@ QuicListenerClaimConnection(
     // certificate.
     //
     QUIC_FRE_ASSERTMSG(
+		Connection->State.HandleClosed || 
         Connection->ClientCallbackHandler != NULL,
         "App MUST set callback handler!");
 
-    Connection->State.ExternalOwner = TRUE;
     Connection->State.UpdateWorker = TRUE;
 
-    return TRUE;
+    return !Connection->State.HandleClosed;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -558,20 +575,13 @@ QuicListenerParamSet(
         const void* Buffer
     )
 {
-    QUIC_STATUS Status;
 
     UNREFERENCED_PARAMETER(Listener);
+    UNREFERENCED_PARAMETER(Param);
     UNREFERENCED_PARAMETER(BufferLength);
     UNREFERENCED_PARAMETER(Buffer);
 
-    switch (Param) {
-
-    default:
-        Status = QUIC_STATUS_INVALID_PARAMETER;
-        break;
-    }
-
-    return Status;
+    return QUIC_STATUS_INVALID_PARAMETER;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)

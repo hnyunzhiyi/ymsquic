@@ -35,6 +35,13 @@ QuicStreamInitialize(
         goto Exit;
     }
     QuicZeroMemory(Stream, sizeof(QUIC_STREAM));
+#if DEBUG
+    QuicDispatchLockAcquire(&Connection->Streams.AllStreamsLock);
+    QuicListInsertTail(&Connection->Streams.AllStreams, &Stream->AllStreamsLink);
+    QuicDispatchLockRelease(&Connection->Streams.AllStreamsLock);
+#endif
+    QuicPerfCounterIncrement(QUIC_PERF_COUNTER_STRM_ACTIVE);
+
 
     Stream->Type = QUIC_HANDLE_TYPE_STREAM;
     Stream->Connection = Connection;
@@ -47,6 +54,7 @@ QuicStreamInitialize(
     Stream->RecvMaxLength = UINT64_MAX;
     Stream->RefCount = 1;
     Stream->SendRequestsTail = &Stream->SendRequests;
+    Stream->SendPriority = QUIC_STREAM_PRIORITY_DEFAULT;
     QuicDispatchLockInitialize(&Stream->ApiSendRequestLock);
     QuicRefInitialize(&Stream->RefCount);
     QuicRangeInitialize(
@@ -105,21 +113,21 @@ QuicStreamInitialize(
     Stream->MaxAllowedRecvOffset = Stream->RecvBuffer.VirtualBufferLength;
     Stream->RecvWindowLastUpdate = QuicTimeUs32();
 
-#if DEBUG
-    QuicDispatchLockAcquire(&Connection->Streams.AllStreamsLock);
-    QuicListInsertTail(&Connection->Streams.AllStreams, &Stream->AllStreamsLink);
-    QuicDispatchLockRelease(&Connection->Streams.AllStreamsLock);
-#endif
-
     Stream->Flags.Initialized = TRUE;
     *NewStream = Stream;
     Stream = NULL;
     PreallocatedRecvBuffer = NULL;
-    QuicPerfCounterIncrement(QUIC_PERF_COUNTER_STRM_ACTIVE);
 
 Exit:
 
     if (Stream) {
+#if DEBUG
+        QuicDispatchLockAcquire(&Connection->Streams.AllStreamsLock);
+        QuicListEntryRemove(&Stream->AllStreamsLink);
+        QuicDispatchLockRelease(&Connection->Streams.AllStreamsLock);
+#endif
+        QuicPerfCounterDecrement(QUIC_PERF_COUNTER_STRM_ACTIVE);
+
         QuicDispatchLockUninitialize(&Stream->ApiSendRequestLock);
         Stream->Flags.Freed = TRUE;
         QuicPoolFree(&Worker->StreamPool, Stream);
@@ -142,8 +150,8 @@ QuicStreamFree(
     QUIC_WORKER* Worker = Connection->Worker;
 
     QUIC_TEL_ASSERT(Stream->RefCount == 0);
-    QUIC_TEL_ASSERT(Stream->Flags.ShutdownComplete);
-    QUIC_TEL_ASSERT(Stream->Flags.HandleClosed);
+    QUIC_TEL_ASSERT(Connection->State.ClosedLocally || Stream->Flags.ShutdownComplete);
+    QUIC_TEL_ASSERT(Connection->State.ClosedLocally || Stream->Flags.HandleClosed);
     QUIC_TEL_ASSERT(Stream->ClosedLink.Flink == NULL);
     QUIC_TEL_ASSERT(Stream->SendLink.Flink == NULL);
 
@@ -157,7 +165,7 @@ QuicStreamFree(
     QuicListEntryRemove(&Stream->AllStreamsLink);
     QuicDispatchLockRelease(&Connection->Streams.AllStreamsLock);
 #endif
-
+	QuicPerfCounterDecrement(QUIC_PERF_COUNTER_STRM_ACTIVE);
     QuicRecvBufferUninitialize(&Stream->RecvBuffer);
     QuicRangeUninitialize(&Stream->SparseAckRanges);
     QuicDispatchLockUninitialize(&Stream->ApiSendRequestLock);
@@ -171,8 +179,6 @@ QuicStreamFree(
 
     Stream->Flags.Freed = TRUE;
     QuicPoolFree(&Worker->StreamPool, Stream);
-
-    QuicPerfCounterDecrement(QUIC_PERF_COUNTER_STRM_ACTIVE);
 
     if (WasStarted) {
 #pragma warning(push)
@@ -192,9 +198,14 @@ QuicStreamStart(
 {
     QUIC_STATUS Status;
 
-    if (QuicConnIsClosed(Stream->Connection) ||
+    BOOLEAN ClosedLocally = Stream->Connection->State.ClosedLocally;
+    if ((ClosedLocally || Stream->Connection->State.ClosedRemotely) ||
         Stream->Flags.Started) {
-        Status = QUIC_STATUS_INVALID_STATE;
+
+        Status = 
+			(ClosedLocally || Stream->Flags.Started) ?
+            QUIC_STATUS_INVALID_STATE :
+            QUIC_STATUS_ABORTED;
         goto Exit;
     }
 
@@ -222,6 +233,7 @@ QuicStreamStart(
     }
 
     Stream->Flags.Started = TRUE;
+    Stream->Flags.IndicatePeerAccepted = !!(Flags & QUIC_STREAM_START_FLAG_INDICATE_PEER_ACCEPT);
 
     QuicTraceLogVerbose(
         "StreamCreated: [strm][%p] Created, Conn=%p ID=%lu IsLocal=%hhu",
@@ -248,7 +260,7 @@ QuicStreamStart(
         // stream data to be sent out now.
         //
         QuicSendQueueFlushForStream(
-            &Stream->Connection->Send, Stream, FALSE);
+            &Stream->Connection->Send, Stream, FALSE, FALSE);
     }
 
     Stream->Flags.SendOpen = !!(Flags & QUIC_STREAM_START_FLAG_IMMEDIATE);
@@ -256,7 +268,8 @@ QuicStreamStart(
         QuicSendSetStreamSendFlag(
             &Stream->Connection->Send,
             Stream,
-            QUIC_STREAM_SEND_FLAG_OPEN);
+            QUIC_STREAM_SEND_FLAG_OPEN,
+			FALSE);
     }
 
     Stream->MaxAllowedSendOffset =
@@ -280,6 +293,14 @@ Exit:
 
     if (!IsRemoteStream) {
         QuicStreamIndicateStartComplete(Stream, Status);
+        if (QUIC_FAILED(Status) &&
+            (Flags & QUIC_STREAM_START_FLAG_SHUTDOWN_ON_FAIL)) {
+            QuicStreamShutdown(
+                Stream,
+                QUIC_STREAM_SHUTDOWN_FLAG_ABORT | QUIC_STREAM_SHUTDOWN_FLAG_IMMEDIATE,
+                0);
+        }
+
     }
 
     return Status;
@@ -291,6 +312,9 @@ QuicStreamClose(
     _In_ __drv_freesMem(Mem) QUIC_STREAM* Stream
     )
 {
+    QUIC_DBG_ASSERT(!Stream->Flags.HandleClosed);
+    Stream->Flags.HandleClosed = TRUE;
+
     if (!Stream->Flags.ShutdownComplete) {
 
         if (Stream->Flags.Started) {
@@ -341,7 +365,7 @@ QuicStreamTraceRundown(
         Stream,
         Stream->Connection,
         Stream->ID,
-        (!QuicConnIsServer(Stream->Connection) ^ (Stream->ID & STREAM_ID_FLAG_IS_SERVER)));
+        (QuicConnIsClient(Stream->Connection) ^ (Stream->ID & STREAM_ID_FLAG_IS_SERVER)));
     QuicTraceLogVerbose(
         "StreamOutFlowBlocked: [strm][%p] Send Blocked Flags: %hhu",
         Stream,
@@ -358,6 +382,12 @@ QuicStreamIndicateEvent(
 {
     QUIC_STATUS Status;
     if (Stream->ClientCallbackHandler != NULL) {
+        QUIC_DBG_ASSERT(
+            !Stream->Connection->State.InlineApiExecution ||
+            Stream->Connection->State.HandleClosed ||
+            Stream->Flags.HandleClosed ||
+            Event->Type == QUIC_STREAM_EVENT_START_COMPLETE);
+
         Status =
             Stream->ClientCallbackHandler(
                 (HQUIC)Stream,
@@ -382,6 +412,9 @@ QuicStreamIndicateStartComplete(
     Event.Type = QUIC_STREAM_EVENT_START_COMPLETE;
     Event.START_COMPLETE.Status = Status;
     Event.START_COMPLETE.ID = Stream->ID;
+    Event.START_COMPLETE.PeerAccepted =
+        !(Stream->OutFlowBlockedReasons & QUIC_FLOW_BLOCKED_STREAM_ID_FLOW_CONTROL);
+
     QuicTraceLogStreamVerbose(
         "IndicateStartComplete: Indicating QUIC_STREAM_EVENT_START_COMPLETE (0x%x)",
         Status);
@@ -399,6 +432,10 @@ QuicStreamIndicateShutdownComplete(
 
         QUIC_STREAM_EVENT Event;
         Event.Type = QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE;
+        Event.SHUTDOWN_COMPLETE.ConnectionShutdown =
+            Stream->Connection->State.ClosedLocally ||
+            Stream->Connection->State.ClosedRemotely;
+
         QuicTraceLogStreamVerbose(
             "IndicateStreamShutdownComplete: Indicating QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE");
         (void)QuicStreamIndicateEvent(Stream, &Event);
@@ -430,6 +467,7 @@ QuicStreamShutdown(
             Stream,
             !!(Flags & QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL),
             !!(Flags & QUIC_STREAM_SHUTDOWN_SILENT),
+			FALSE,
             ErrorCode);
     }
 
@@ -459,6 +497,7 @@ QuicStreamTryCompleteShutdown(
     )
 {
     if (!Stream->Flags.ShutdownComplete &&
+	    !Stream->Flags.ReceiveDataPending &&
         Stream->Flags.LocalCloseAcked &&
         Stream->Flags.RemoteCloseAcked) {
 
@@ -493,11 +532,43 @@ QuicStreamParamSet(
         const void* Buffer
     )
 {
-    UNREFERENCED_PARAMETER(Stream);
-    UNREFERENCED_PARAMETER(Param);
-    UNREFERENCED_PARAMETER(BufferLength);
-    UNREFERENCED_PARAMETER(Buffer);
-    return QUIC_STATUS_INVALID_PARAMETER;
+    QUIC_STATUS Status;
+
+    switch (Param) {
+    case QUIC_PARAM_STREAM_ID:
+    case QUIC_PARAM_STREAM_0RTT_LENGTH:
+    case QUIC_PARAM_STREAM_IDEAL_SEND_BUFFER_SIZE:
+        Status = QUIC_STATUS_INVALID_PARAMETER;
+        break;
+
+    case QUIC_PARAM_STREAM_PRIORITY: {
+
+        if (BufferLength != sizeof(Stream->SendPriority)) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        if (Stream->SendPriority != *(uint16_t*)Buffer) {
+            Stream->SendPriority = *(uint16_t*)Buffer;
+
+            if (Stream->Flags.Started && Stream->SendFlags != 0) {
+               //
+               //Update the stream's place in the send queue if necessary.
+               //                            
+                QuicSendUpdateStreamPriority(&Stream->Connection->Send, Stream);
+            }
+        }
+
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+    }
+
+    default:
+        Status = QUIC_STATUS_INVALID_PARAMETER;
+        break;
+    }
+
+    return Status;
 }
 
 QUIC_STATUS
@@ -553,6 +624,7 @@ QuicStreamParamGet(
         if (!Stream->Flags.Started ||
             !Stream->Flags.LocalCloseAcked) {
             Status = QUIC_STATUS_INVALID_STATE;
+			break;
         }
 
         *BufferLength = sizeof(uint64_t);
@@ -580,6 +652,25 @@ QuicStreamParamGet(
 
         Status = QUIC_STATUS_SUCCESS;
         break;
+    case QUIC_PARAM_STREAM_PRIORITY:
+
+        if (*BufferLength < sizeof(Stream->SendPriority)) {
+            *BufferLength = sizeof(Stream->SendPriority);
+            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+
+        if (Buffer == NULL) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        *BufferLength = sizeof(Stream->SendPriority);
+        *(uint16_t*)Buffer = Stream->SendPriority;
+
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+
 
     default:
         Status = QUIC_STATUS_INVALID_PARAMETER;

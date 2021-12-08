@@ -73,7 +73,7 @@ void
     );
 
 typedef
-QUIC_RECV_DATAGRAM*
+QUIC_RECV_DATA*
 (*QUIC_DATAPATH_RECVCONTEXT_TO_RECVBUFFER)(
     _In_ const QUIC_RECV_PACKET* const RecvPacket
     );
@@ -81,7 +81,7 @@ QUIC_RECV_DATAGRAM*
 typedef
 QUIC_RECV_PACKET*
 (*QUIC_DATAPATH_RECVBUFFER_TO_RECVCONTEXT)(
-    _In_ const QUIC_RECV_DATAGRAM* const RecvDatagram
+    _In_ const QUIC_RECV_DATA* const RecvDatagram
     );
 
 typedef
@@ -152,7 +152,7 @@ void
 typedef
 void
 (*QUIC_DATAPATH_BINDING_RETURN_RECV_BUFFER)(
-    _In_ QUIC_RECV_DATAGRAM* RecvPacketChain
+    _In_ QUIC_RECV_DATA* RecvPacketChain
     );
 
 typedef

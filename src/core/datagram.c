@@ -74,23 +74,12 @@ QuicDatagramInitialize(
     _In_ QUIC_DATAGRAM* Datagram
     )
 {
-    Datagram->ReceiveEnabled = FALSE;
     Datagram->SendEnabled = TRUE;
     Datagram->MaxSendLength = UINT16_MAX;
     Datagram->PrioritySendQueueTail = &Datagram->SendQueue;
     Datagram->SendQueueTail = &Datagram->SendQueue;
     QuicDispatchLockInitialize(&Datagram->ApiQueueLock);
     QuicDatagramValidate(Datagram);
-}
-
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-QuicDatagramSetReceiveEnabledState(
-    _In_ QUIC_DATAGRAM* Datagram,
-    _In_ BOOLEAN Enabled
-    )
-{
-    Datagram->ReceiveEnabled = Enabled;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -272,7 +261,7 @@ QuicDatagramOnSendStateChanged(
             MtuMaxSendLength =
                 QuicCalculateDatagramLength(
                     QUIC_ADDRESS_FAMILY_INET6,
-                    QUIC_DEFAULT_PATH_MTU,
+                    QUIC_DPLPMUTD_MIN_MTU,
                     QUIC_MIN_INITIAL_CONNECTION_ID_LENGTH);
         } else {
             const QUIC_PATH* Path = &Connection->Paths[0];
@@ -295,16 +284,18 @@ QuicDatagramOnSendStateChanged(
 
     Datagram->MaxSendLength = NewMaxSendLength;
 
-    QUIC_CONNECTION_EVENT Event;
-    Event.Type = QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED;
-    Event.DATAGRAM_STATE_CHANGED.SendEnabled = SendEnabled;
-    Event.DATAGRAM_STATE_CHANGED.MaxSendLength = NewMaxSendLength;
+    if (Connection->State.ExternalOwner) {	
+    	QUIC_CONNECTION_EVENT Event;
+    	Event.Type = QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED;
+    	Event.DATAGRAM_STATE_CHANGED.SendEnabled = SendEnabled;
+    	Event.DATAGRAM_STATE_CHANGED.MaxSendLength = NewMaxSendLength;
 
-    QuicTraceLogConnVerbose(
-        "IndicateDatagramStateChanged: Indicating DATAGRAM_STATE_CHANGED [SendEnabled=%hhu] [MaxSendLength=%hu]",
-        Event.DATAGRAM_STATE_CHANGED.SendEnabled,
-        Event.DATAGRAM_STATE_CHANGED.MaxSendLength);
-    (void)QuicConnIndicateEvent(Connection, &Event);
+    	QuicTraceLogConnVerbose(
+        	"IndicateDatagramStateChanged: Indicating DATAGRAM_STATE_CHANGED [SendEnabled=%hhu] [MaxSendLength=%hu]",
+        	Event.DATAGRAM_STATE_CHANGED.SendEnabled,
+        	Event.DATAGRAM_STATE_CHANGED.MaxSendLength);
+    	(void)QuicConnIndicateEvent(Connection, &Event);
+	}	
 
     if (!SendEnabled) {
         QuicDatagramSendShutdown(Datagram);
@@ -540,7 +531,8 @@ QuicDatagramProcessFrame(
     _Inout_ uint16_t* Offset
     )
 {
-    QUIC_DBG_ASSERT(Datagram->ReceiveEnabled);
+   	QUIC_CONNECTION* Connection = QuicDatagramGetConnection(Datagram);
+    QUIC_DBG_ASSERT(Connection->Settings.DatagramReceiveEnabled);
 
     QUIC_DATAGRAM_EX Frame;
     if (!QuicDatagramFrameDecode(FrameType, BufferLength, Buffer, Offset, &Frame)) {
@@ -560,7 +552,6 @@ QuicDatagramProcessFrame(
         Event.DATAGRAM_RECEIVED.Flags = 0;
     }
 
-    QUIC_CONNECTION* Connection = QuicDatagramGetConnection(Datagram);
     QuicTraceLogConnVerbose(
         "IndicateDatagramReceived: Indicating DATAGRAM_RECEIVED [len=%hu]",
         (uint16_t)Frame.Length);

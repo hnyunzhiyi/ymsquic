@@ -29,19 +29,19 @@ QuicSentPacketMetadataReleaseFrames(
 #pragma warning(push)
 #pragma warning(disable:6001)
         case QUIC_FRAME_RESET_STREAM:
-            QuicStreamRelease(Metadata->Frames[i].RESET_STREAM.Stream, QUIC_STREAM_REF_SEND_PACKET);
+            QuicStreamSentMetadataDecrement(Metadata->Frames[i].RESET_STREAM.Stream);
             break;
         case QUIC_FRAME_MAX_STREAM_DATA:
-            QuicStreamRelease(Metadata->Frames[i].MAX_STREAM_DATA.Stream, QUIC_STREAM_REF_SEND_PACKET);
+            QuicStreamSentMetadataDecrement(Metadata->Frames[i].MAX_STREAM_DATA.Stream);
             break;
         case QUIC_FRAME_STREAM_DATA_BLOCKED:
-            QuicStreamRelease(Metadata->Frames[i].STREAM_DATA_BLOCKED.Stream, QUIC_STREAM_REF_SEND_PACKET);
+            QuicStreamSentMetadataDecrement(Metadata->Frames[i].STREAM_DATA_BLOCKED.Stream);
             break;
         case QUIC_FRAME_STOP_SENDING:
-            QuicStreamRelease(Metadata->Frames[i].STOP_SENDING.Stream, QUIC_STREAM_REF_SEND_PACKET);
+            QuicStreamSentMetadataDecrement(Metadata->Frames[i].STOP_SENDING.Stream);
             break;
         case QUIC_FRAME_STREAM:
-            QuicStreamRelease(Metadata->Frames[i].STREAM.Stream, QUIC_STREAM_REF_SEND_PACKET);
+            QuicStreamSentMetadataDecrement(Metadata->Frames[i].STREAM.Stream);
             break;
 #pragma warning(pop)
         default:
@@ -59,8 +59,8 @@ QuicSentPacketPoolInitialize(
     _Inout_ QUIC_SENT_PACKET_POOL* Pool
     )
 {
-    for (uint8_t i = 0; i < ARRAYSIZE(Pool->Pools); i++) {
-        uint16_t PacketMetadataSize =
+    for (uint32_t i = 0; i < ARRAYSIZE(Pool->Pools); i++) {
+        uint32_t PacketMetadataSize =
             (i + 1) * sizeof(QUIC_SENT_FRAME_METADATA) +
             sizeof(QUIC_SENT_PACKET_METADATA);
 
@@ -78,7 +78,7 @@ QuicSentPacketPoolUninitialize(
     _In_ QUIC_SENT_PACKET_POOL* Pool
     )
 {
-    for (uint8_t i = 0; i < ARRAYSIZE(Pool->Pools); i++) {
+    for (size_t i = 0; i < ARRAYSIZE(Pool->Pools); i++) {
         QuicPoolUninitialize(Pool->Pools + i);
     }
 }
@@ -93,7 +93,9 @@ QuicSentPacketPoolGetPacketMetadata(
     QUIC_SENT_PACKET_METADATA* Metadata =
         QuicPoolAlloc(Pool->Pools + FrameCount - 1);
 #if DEBUG
-    Metadata->Flags.Freed = FALSE;
+    if (Metadata != NULL) {
+        Metadata->Flags.Freed = FALSE;
+    }
 #endif
     return Metadata;
 }

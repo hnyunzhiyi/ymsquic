@@ -25,7 +25,7 @@ typedef struct QUIC_LISTENER QUIC_LISTENER;
 // Note - Keep quictypes.h's copy up to date.
 //
 typedef union QUIC_CONNECTION_STATE {
-    uint32_t Flags;
+    uint64_t Flags;
     struct {
         BOOLEAN Allocated       : 1;    // Allocated. Used for Debugging.
         BOOLEAN Initialized     : 1;    // Initialized successfully. Used for Debugging.
@@ -146,19 +146,44 @@ typedef union QUIC_CONNECTION_STATE {
         BOOLEAN ResumptionEnabled : 1;
 
         //
-        // Indicates that an app close from a non worker thread is in progress.
-        // Received by the QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE event.
-        //
-        BOOLEAN AppCloseInProgress: 1;
+        //When true, this indicates that reordering shouldn't elict an
+        //immediate acknowledgement.
+        //          
+		BOOLEAN IgnoreReordering : 1;
 
-#ifdef QuicVerifierEnabledByAddr
         //
-        // The calling app is being verified (app or driver verifier).
+        //When true, this indicates that the connection is currently executing
+        //an API call inline (from a reentrant call on a callback).
         //
-        BOOLEAN IsVerifying : 1;
-#endif
+         BOOLEAN InlineApiExecution : 1;              
+
+        //
+        //True when a server attempts Compatible Version Negotiation
+        BOOLEAN CompatibleVerNegotiationAttempted : 1;
+
+        //
+        //True once a client connection has completed a compatible version
+        //negotiation, and false otherwise. Used to prevent packets with invalid
+        //version fields from being accepted.
+        //                 
+        BOOLEAN CompatibleVerNegotiationCompleted : 1;
+
+        //
+        //When true, this indicates the app has set the local interface index.
+        //
+		BOOLEAN LocalInterfaceSet : 1;
+
+#ifdef CxPlatVerifierEnabledByAddr
+        //
+        //The calling app is being verified (app or driver verifier).
+        //             		
+		BOOLEAN IsVerifying : 1;
+#endif        
     };
 } QUIC_CONNECTION_STATE;
+
+
+QUIC_STATIC_ASSERT(sizeof(QUIC_CONNECTION_STATE) == sizeof(uint64_t), "Ensure correct size/type");
 
 //
 // Different references on a connection.
@@ -244,11 +269,12 @@ typedef struct QUIC_CONN_STATS {
 
     struct {
         uint64_t TotalPackets;          // QUIC packets; could be coalesced into fewer UDP datagrams.
-        uint64_t ReorderedPackets;      // Means not the expected next packet. Could indicate loss gap too.
+        uint64_t ReorderedPackets;      // Packets where packet number is less than highest seen.
         uint64_t DroppedPackets;        // Includes DuplicatePackets.
         uint64_t DuplicatePackets;
         uint64_t DecryptionFailures;    // Count of packets that failed to decrypt.
         uint64_t ValidPackets;          // Count of packets that successfully decrypted or had no encryption.
+        uint64_t ValidAckFrames;        // Count of receive ACK frames.
 
         uint64_t TotalBytes;            // Sum of UDP payloads
         uint64_t TotalStreamBytes;      // Sum of stream payloads
@@ -317,10 +343,10 @@ typedef struct QUIC_CONNECTION {
     //
     short RefTypeCount[QUIC_CONN_REF_COUNT];
 #endif
-
+	
     //
-    // The current connnection state/flags.
-    //
+    //The current connnection state/flags.
+    //   
     QUIC_CONNECTION_STATE State;
 
     //
@@ -379,6 +405,30 @@ typedef struct QUIC_CONNECTION {
     uint8_t AckDelayExponent;
 
     //
+    // The number of packets we want the peer to wait before sending an
+    // immediate acknowledgement. Requires the ACK_FREQUENCY extension/frame to
+    // be able to send to the peer.
+    //            
+	uint8_t PacketTolerance;
+
+    //
+    //The number of packets we want the peer to wait before sending an
+    //immediate acknowledgement. Requires the ACK_FREQUENCY extension/frame to
+    //be able to send to the peer.
+    //               
+	uint8_t PeerPacketTolerance;
+
+    //
+    //The ACK frequency sequence number we are currently using to send.
+    //       
+    uint64_t SendAckFreqSeqNum;
+
+    //
+    //The ACK frequency sequence number we are currently using to send.
+    //       
+    uint64_t NextRecvAckFreqSeqNum;
+
+    //
     // The sequence number to use for the next source CID.
     //
     QUIC_VAR_INT NextSourceCidSequenceNumber;
@@ -399,7 +449,7 @@ typedef struct QUIC_CONNECTION {
     //
     // The list of connection IDs used for receiving.
     //
-    QUIC_SINGLE_LIST_ENTRY SourceCids;
+    QUIC_SLIST_ENTRY SourceCids;
 
     //
     // The list of connection IDs used for sending. Given to us by the peer.
@@ -420,8 +470,8 @@ typedef struct QUIC_CONNECTION {
     // Receive packet queue.
     //
     uint32_t ReceiveQueueCount;
-    QUIC_RECV_DATAGRAM* ReceiveQueue;
-    QUIC_RECV_DATAGRAM** ReceiveQueueTail;
+    QUIC_RECV_DATA* ReceiveQueue;
+    QUIC_RECV_DATA** ReceiveQueueTail;
     QUIC_DISPATCH_LOCK ReceiveQueueLock;
 
     //
@@ -527,10 +577,33 @@ typedef struct QUIC_CONNECTION {
     // Mostly test specific state.
     //
     QUIC_PRIVATE_TRANSPORT_PARAMETER TestTransportParameter;
-	bool TransferCanceled;
+
+#ifdef QUIC_TLS_SECRETS_SUPPORT
+    //
+    //Struct to log TLS traffic secrets. The app will have to read and
+    //format the struct once the connection is connected.
+    //          
+    QUIC_TLS_SECRETS* TlsSecrets;
+
+#endif 
+    //
+    //Previously-attempted QUIC version, after Incompatible Version Negotiation.
+    //      
+    uint32_t PreviousQuicVersion;
+
+    //
+    //Initially-attempted QUIC version.
+    //Only populated during compatible version negotiation.
+    //           
+    uint32_t OriginalQuicVersion;
+
+    //
+    //The size of the keep alive padding.
+    //      
+    uint16_t KeepAlivePadding;
 
 	CHANNEL_DATA *Channel;
-	//void *Context;
+	Fd_Attribute* Attribute;
 } QUIC_CONNECTION;
 
 typedef struct QUIC_SERIALIZED_RESUMPTION_STATE {
@@ -575,6 +648,18 @@ QuicConnIsServer(
     )
 {
     return ((QUIC_HANDLE*)Connection)->Type == QUIC_HANDLE_TYPE_CONNECTION_SERVER;
+}
+
+//
+// Helper to determine if a connection is client side.
+//
+inline
+BOOLEAN
+QuicConnIsClient(
+    _In_ const QUIC_CONNECTION * const Connection
+    )
+{
+    return ((QUIC_HANDLE*)Connection)->Type == QUIC_HANDLE_TYPE_CONNECTION_CLIENT;
 }
 
 //
@@ -810,7 +895,7 @@ _Success_(return != NULL)
 QUIC_CONNECTION*
 QuicConnAlloc(
     _In_ QUIC_REGISTRATION* Registration,
-    _In_opt_ const QUIC_RECV_DATAGRAM* const Datagram
+    _In_opt_ const QUIC_RECV_DATA* const Datagram
     );
 
 //
@@ -1021,7 +1106,7 @@ QuicConnGetSourceCidFromSeq(
     _Out_ BOOLEAN* IsLastCid
     )
 {
-    for (QUIC_SINGLE_LIST_ENTRY** Entry = &Connection->SourceCids.Next;
+    for (QUIC_SLIST_ENTRY** Entry = &Connection->SourceCids.Next;
             *Entry != NULL;
             Entry = &(*Entry)->Next) {
         QUIC_CID_HASH_ENTRY* SourceCid =
@@ -1060,7 +1145,7 @@ QuicConnGetSourceCidFromBuf(
         const uint8_t* CidBuffer
     )
 {
-    for (QUIC_SINGLE_LIST_ENTRY* Entry = Connection->SourceCids.Next;
+    for (QUIC_SLIST_ENTRY* Entry = Connection->SourceCids.Next;
             Entry != NULL;
             Entry = Entry->Next) {
         QUIC_CID_HASH_ENTRY* SourceCid =
@@ -1081,7 +1166,7 @@ QuicConnGetSourceCidFromBuf(
 //
 _IRQL_requires_max_(DISPATCH_LEVEL)
 inline
-QUIC_CID_QUIC_LIST_ENTRY*
+QUIC_CID_LIST_ENTRY*
 QuicConnGetDestCidFromSeq(
     _In_ QUIC_CONNECTION* Connection,
     _In_ QUIC_VAR_INT SequenceNumber,
@@ -1091,10 +1176,10 @@ QuicConnGetDestCidFromSeq(
     for (QUIC_LIST_ENTRY* Entry = Connection->DestCids.Flink;
             Entry != &Connection->DestCids;
             Entry = Entry->Flink) {
-        QUIC_CID_QUIC_LIST_ENTRY* DestCid =
+        QUIC_CID_LIST_ENTRY* DestCid =
             QUIC_CONTAINING_RECORD(
                 Entry,
-                QUIC_CID_QUIC_LIST_ENTRY,
+                QUIC_CID_LIST_ENTRY,
                 Link);
         if (DestCid->CID.SequenceNumber == SequenceNumber) {
             if (RemoveFromList) {
@@ -1181,10 +1266,10 @@ QuicConnRestart(
 // accordingly.
 //
 _IRQL_requires_max_(PASSIVE_LEVEL)
-void
+QUIC_STATUS
 QuicConnProcessPeerTransportParameters(
     _In_ QUIC_CONNECTION* Connection,
-    _In_ BOOLEAN FromCache
+    _In_ BOOLEAN FromResumptionTicket
     );
 
 //
@@ -1307,7 +1392,7 @@ _IRQL_requires_max_(DISPATCH_LEVEL)
 void
 QuicConnQueueRecvDatagrams(
     _In_ QUIC_CONNECTION* Connection,
-    _In_ QUIC_RECV_DATAGRAM* DatagramChain,
+    _In_ QUIC_RECV_DATA* DatagramChain,
     _In_ uint32_t DatagramChainLength
     );
 
@@ -1319,6 +1404,16 @@ void
 QuicConnQueueUnreachable(
     _In_ QUIC_CONNECTION* Connection,
     _In_ const QUIC_ADDR* RemoteAddress
+    );
+
+//
+// Queues up an update to the packet tolerance we want the peer to use.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicConnUpdatePeerPacketTolerance(
+    _In_ QUIC_CONNECTION* Connection,
+    _In_ uint8_t NewPacketTolerance
     );
 
 //
@@ -1346,3 +1441,67 @@ QuicConnParamGet(
     _Out_writes_bytes_opt_(*BufferLength)
         void* Buffer
     );
+
+//
+// Get the max MTU for a specific path.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+inline
+uint16_t
+QuicConnGetMaxMtuForPath(
+    _In_ QUIC_CONNECTION* Connection,
+    _In_ QUIC_PATH* Path
+    )
+{
+    //
+    //We can't currently cache the full value because this is called before
+    //handshake complete in QuicPacketBuilderFinalize. So cache the values
+    //we can.
+    //               
+    uint16_t LocalMtu = Path->LocalMtu;
+    if (LocalMtu == 0) {
+        LocalMtu = QuicSocketGetLocalMtu(Path->Binding->Socket);
+        Path->LocalMtu = LocalMtu;
+    }
+    uint16_t RemoteMtu = 0xFFFF;
+    if ((Connection->PeerTransportParams.Flags & QUIC_TP_FLAG_MAX_UDP_PAYLOAD_SIZE)) {
+        RemoteMtu =
+            PacketSizeFromUdpPayloadSize(
+                QuicAddrGetFamily(&Path->RemoteAddress),
+                (uint16_t)Connection->PeerTransportParams.MaxUdpPayloadSize);
+    }
+    uint16_t SettingsMtu = Connection->Settings.MaximumMtu;
+    return min(min(LocalMtu, RemoteMtu), SettingsMtu);
+}
+
+//
+// Check to see if enough time has passed while in Search Complete to retry MTU
+// discovery.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+inline
+void
+QuicMtuDiscoveryCheckSearchCompleteTimeout(
+    _In_ QUIC_CONNECTION* Connection,
+    _In_ uint64_t TimeNow
+    )
+{
+    uint64_t TimeoutTime = Connection->Settings.MtuDiscoverySearchCompleteTimeoutUs;
+    for (uint8_t i = 0; i < Connection->PathsCount; i++) {
+        //
+        //Only trigger a new send if we're in Search Complete and enough time has
+        //passed.
+        //                      
+        QUIC_PATH* Path = &Connection->Paths[i];
+        if (!Path->IsActive || !Path->MtuDiscovery.IsSearchComplete) {
+            continue;
+        }
+        if (QuicTimeDiff64(
+                Path->MtuDiscovery.SearchCompleteEnterTimeUs,
+                TimeNow) >= TimeoutTime) {
+            QuicMtuDiscoveryMoveToSearching(&Path->MtuDiscovery, Connection);
+        }
+    }
+}
+
+

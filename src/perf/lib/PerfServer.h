@@ -75,6 +75,16 @@ private:
         _Inout_ QUIC_LISTENER_EVENT* Event
         );
 
+    static
+    QUIC_STATUS
+    ListenerCallbackStatic(
+        _In_ HQUIC ListenerHandle,
+        _In_ void* Context,
+        _Inout_ QUIC_LISTENER_EVENT* Event
+        ) {
+        return ((PerfServer*)Context)->ListenerCallback(ListenerHandle, Event);
+    }
+
     QUIC_STATUS
     ConnectionCallback(
         _In_ HQUIC ConnectionHandle,

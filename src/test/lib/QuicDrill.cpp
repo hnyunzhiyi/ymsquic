@@ -83,26 +83,26 @@ QuicDrillConnectionCallbackHandler(
 
 struct DrillSender {
     QUIC_DATAPATH* Datapath;
-    QUIC_DATAPATH_BINDING* Binding;
+	QUIC_SOCKET* Binding;
     QUIC_ADDR ServerAddress;
 
     _IRQL_requires_max_(DISPATCH_LEVEL)
     _Function_class_(QUIC_DATAPATH_RECEIVE_CALLBACK)
     static void
     DrillUdpRecvCallback(
-        _In_ QUIC_DATAPATH_BINDING* /* Binding */,
+        _In_ QUIC_SOCKET* /* Binding */,
         _In_ void* /* Context */,
-        _In_ QUIC_RECV_DATAGRAM* RecvBufferChain
+        _In_ QUIC_RECV_DATA* RecvBufferChain
         )
     {
-        QuicDataPathBindingReturnRecvDatagrams(RecvBufferChain);
+		QuicRecvDataReturn(RecvBufferChain);
     }
 
     _IRQL_requires_max_(DISPATCH_LEVEL)
     _Function_class_(QUIC_DATAPATH_UNREACHABLE_CALLBACK)
     static void
     DrillUdpUnreachCallback(
-        _In_ QUIC_DATAPATH_BINDING* /* Binding */,
+        _In_ QUIC_SOCKET* /* Binding */,
         _In_ void* /* Context */,
         _In_ const QUIC_ADDR* /* RemoteAddress */
         )
@@ -113,7 +113,7 @@ struct DrillSender {
 
     ~DrillSender() {
         if (Binding != nullptr) {
-            QuicDataPathBindingDelete(Binding);
+			QuicSocketDelete(Binding);
         }
 
         if (Datapath != nullptr) {
@@ -128,12 +128,17 @@ struct DrillSender {
         _In_ uint16_t NetworkPort
         )
     {
+        const QUIC_UDP_DATAPATH_CALLBACKS DatapathCallbacks = {
+            DrillUdpRecvCallback,
+            DrillUdpUnreachCallback,
+        };
         QUIC_STATUS Status =
             QuicDataPathInitialize(
                 0,
-                DrillUdpRecvCallback,
-                DrillUdpUnreachCallback,
+                &DatapathCallbacks,
+                NULL,
                 &Datapath);
+
         if (QUIC_FAILED(Status)) {
             TEST_FAILURE("Datapath init failed 0x%x", Status);
             return Status;
@@ -157,16 +162,25 @@ struct DrillSender {
             ServerAddress.Ipv6.sin6_port = NetworkPort;
         }
 
+        QUIC_UDP_CONFIG UdpConfig = {0};
+        UdpConfig.LocalAddress = nullptr;
+        UdpConfig.RemoteAddress = &ServerAddress;
+        UdpConfig.Flags = 0;
+        UdpConfig.InterfaceIndex = 0;
+        UdpConfig.CallbackContext = this;
+#ifdef QUIC_OWNING_PROCESS
+        UdpConfig.OwningProcess = QuicProcessGetCurrentProcess();
+#endif
+
         Status =
-            QuicDataPathBindingCreate(
+            QuicSocketCreateUdp(
                 Datapath,
-                nullptr,
-                &ServerAddress,
-                this,
+                &UdpConfig,
                 &Binding);
         if (QUIC_FAILED(Status)) {
             TEST_FAILURE("Binding failed: 0x%x", Status);
         }
+
         return Status;
     }
 
@@ -179,30 +193,35 @@ struct DrillSender {
         QUIC_FRE_ASSERT(PacketBuffer->size() <= UINT16_MAX);
         const uint16_t DatagramLength = (uint16_t) PacketBuffer->size();
 
-        QUIC_DATAPATH_SEND_CONTEXT* SendContext =
-            QuicDataPathBindingAllocSendContext(
+        QUIC_ADDR LocalAddress;
+        QuicSocketGetLocalAddress(Binding, &LocalAddress);
+
+        QUIC_SEND_DATA* SendData =
+            QuicSendDataAlloc(
                 Binding, QUIC_ECN_NON_ECT, DatagramLength);
 
         QUIC_BUFFER* SendBuffer =
-            QuicDataPathBindingAllocSendDatagram(SendContext, DatagramLength);
+            QuicSendDataAllocBuffer(SendData, DatagramLength);
 
         if (SendBuffer == nullptr) {
             TEST_FAILURE("Buffer null");
             Status = QUIC_STATUS_OUT_OF_MEMORY;
             return Status;
         }
-
-        // Copy test packet into SendBuffer.
+        //
+        //Copy test packet into SendBuffer.
+        //               
         memcpy(SendBuffer->Buffer, PacketBuffer->data(), DatagramLength);
-
         Status =
-            QuicDataPathBindingSendTo(
+            QuicSocketSend(
                 Binding,
+                &LocalAddress,
                 &ServerAddress,
-                SendContext);
+                SendData,
+                0);
 
         return Status;
-    }
+	}
 };
 
 bool

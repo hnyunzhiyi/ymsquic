@@ -16,6 +16,7 @@ set(SOURCES
     listener.c
     lookup.c
     loss_detection.c
+	mtu_discovery.c
     operation.c
     packet.c
     packet_builder.c
@@ -34,6 +35,7 @@ set(SOURCES
     stream_set.c
     timer_wheel.c
     worker.c
+	version_neg.c
     operation.h
     stream.h
     connection.h
