@@ -68,7 +68,7 @@ MsQuicConnectionOpen(
 
     Connection->ClientCallbackHandler = Handler;
     Connection->ClientContext = Context;
-	Connection->Attribute = NULL;
+    Connection->Attribute = NULL;
 
     QuicRegistrationQueueNewConnection(Registration, Connection);
 	
@@ -121,15 +121,15 @@ MsQuicConnectionClose(
         // Execute this blocking API call inline if called on the worker thread.
         //
         QuicConnCloseHandle(Connection);
-		if (!AlreadyInline) {
-			Connection->State.InlineApiExecution = FALSE;
-		}
+	if (!AlreadyInline) {
+		Connection->State.InlineApiExecution = FALSE;
+	}
 
     } else {
 
         QUIC_EVENT CompletionEvent;
         QUIC_OPERATION Oper;
-		QuicZeroMemory(&Oper, sizeof(QUIC_OPERATION));
+	QuicZeroMemory(&Oper, sizeof(QUIC_OPERATION));
         QUIC_API_CONTEXT ApiCtx;
 
         Oper.Type = QUIC_OPER_TYPE_API_CALL;
@@ -367,7 +367,7 @@ Error:
     if (ServerNameCopy != NULL) {
         QUIC_FREE(ServerNameCopy);
     }
-		QuicTraceLogInfo("ApiExitStatus: [ api] Exit %u", Status);
+    QuicTraceLogInfo("ApiExitStatus: [ api] Exit %u", Status);
 
     return Status;
 }
@@ -564,7 +564,7 @@ Error:
 
     if( Status != QUIC_STATUS_SUCCESS){
     	QuicTraceLogError("ApiExitStatus: [api] Exit %u", Status);
-	}
+    }
     
     return Status;
 }
@@ -774,7 +774,7 @@ MsQuicStreamStart(
         goto Exit;
     }
 
-	if (Flags & QUIC_STREAM_START_FLAG_ASYNC) {
+    if (Flags & QUIC_STREAM_START_FLAG_ASYNC) {
         QUIC_OPERATION* Oper =
             QuicOperationAlloc(Connection->Worker, QUIC_OPER_TYPE_API_CALL);
         if (Oper == NULL) {
@@ -803,7 +803,7 @@ MsQuicStreamStart(
         Status = QUIC_STATUS_PENDING;
 
     } else if (Connection->WorkerThreadID == QuicCurThreadID()) { 
-		QUIC_PASSIVE_CODE();
+	QUIC_PASSIVE_CODE();
         //
         //Execute this blocking API call inline if called on the worker thread.
         //           		
@@ -816,9 +816,9 @@ MsQuicStreamStart(
             Connection->State.InlineApiExecution = FALSE;
         }		
 
-	} else {
+    } else {
 
-		QUIC_PASSIVE_CODE();
+	QUIC_PASSIVE_CODE();
         QUIC_CONN_VERIFY(Connection, !Connection->State.HandleClosed);
 
         QUIC_EVENT CompletionEvent;
@@ -1363,7 +1363,7 @@ MsQuicGetParam(
 {
     QUIC_PASSIVE_CODE();
 
-	if ((Param & 0xFC000000) != 0) {
+    if ((Param & 0xFC000000) != 0) {
         //
         //Has level embedded parameter. Validate matches passed in level.
         //            			
@@ -1374,12 +1374,12 @@ MsQuicGetParam(
                 "Param level does not match param value");
             return QUIC_STATUS_INVALID_PARAMETER;
         }				
-	} else {
+    } else {
         //
         //Missing level embedded parameter. Inject level into parameter.
         //              		
-		Param = QUIC_PARAM_GENERATOR(Level, Param);
-	}
+	Param = QUIC_PARAM_GENERATOR(Level, Param);
+    }
 	
 
     if (((Handle == NULL) ^ (Level == QUIC_PARAM_LEVEL_GLOBAL)) ||
@@ -1437,7 +1437,7 @@ MsQuicGetParam(
             Connection->State.InlineApiExecution = TRUE;
         }		        
         Status = QuicLibraryGetParam(Handle, Level, Param, BufferLength, Buffer);
-		if (!AlreadyInline) {
+	if (!AlreadyInline) {
             Connection->State.InlineApiExecution = FALSE;
         }       
         goto Error;
@@ -1555,26 +1555,24 @@ BOOLEAN Get_ChannelState(_In_ _Pre_defensive_ CHANNEL_DATA* Channel)
     {
         return FALSE;
     }
-    else
+
+    if (Channel->Mode == CLIENT)
     {
-        if (Channel->Mode == CLIENT)
+        QUIC_CONNECTION* Connect = (QUIC_CONNECTION*)(Channel->Connect);
+        if ((Connect == NULL) || (Connect->Paths == NULL) || (Connect->Paths[0].Binding == NULL))
         {
-            QUIC_CONNECTION* Connect = (QUIC_CONNECTION*)(Channel->Connect);
-            if ((Connect == NULL) || (Connect->Paths == NULL) || (Connect->Paths[0].Binding == NULL))
-            {
-                return FALSE;
-            }
-        }
-        else
-        {
-            QUIC_LISTENER* Listener = (QUIC_LISTENER*)(Channel->Connect);
-            if ((Listener == NULL) || (Listener->Binding == NULL))
-            {
-                return FALSE;
-            }
+            return FALSE;
         }
     }
-	return TRUE;
+    else
+    {
+        QUIC_LISTENER* Listener = (QUIC_LISTENER*)(Channel->Connect);
+        if ((Listener == NULL) || (Listener->Binding == NULL))
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -1595,9 +1593,9 @@ MsQuic_SetSocketOpt(_In_ _Pre_defensive_ CHANNEL_DATA* Channel, _In_ int Level,
 			return -1;
 		}		
 		Channel->Attribute->level = Level;
-        Channel->Attribute->optname = Optname;
-        Channel->Attribute->optval = Optval;
-        Channel->Attribute->optlen = Optlen;
+        	Channel->Attribute->optname = Optname;
+        	Channel->Attribute->optval = Optval;
+        	Channel->Attribute->optlen = Optlen;
 		Channel->Attribute->request = SET_ATTRIBUTE;
 	}
 	else 
@@ -1632,15 +1630,15 @@ MsQuic_GetSocketOpt(_In_ _Pre_defensive_ CHANNEL_DATA* Channel, _In_ int Level,
     {
         if (Channel->Attribute != NULL)
         {
-			if ((Channel->Attribute->level == Level) && (Channel->Attribute->optname == Optname))
-			{
-				Optval = Channel->Attribute->optval;
-				Optlen = &Channel->Attribute->optlen;	
-			}
-			return;
-		}		
-		Optval = NULL;
-		*Optlen = 0;
+	    if ((Channel->Attribute->level == Level) && (Channel->Attribute->optname == Optname))
+	    {
+		Optval = Channel->Attribute->optval;
+		Optlen = &Channel->Attribute->optlen;	
+	    }
+            return;
+	}		
+	Optval = NULL;
+	*Optlen = 0;
     }
     else
     {
@@ -1656,7 +1654,7 @@ MsQuic_GetSocketOpt(_In_ _Pre_defensive_ CHANNEL_DATA* Channel, _In_ int Level,
         }
         GetsockOpt(Socket, 1, Level, Optname, Optval, Optlen);
     }
-	return;
+    return;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -1665,25 +1663,25 @@ QUIC_API
 MsQuic_Recv(_In_ CHANNEL_DATA* Channel, _Inout_ uint8_t* Dest, _Outptr_ uint64_t Len, _In_ int *Flags)
 {
     uint64_t Length = 0, Offset = 0;
-	do {
-		if(!__sync_fetch_and_sub(&Channel->RecvList.Count, 0))
+    do {
+	if(!__sync_fetch_and_sub(&Channel->RecvList.Count, 0))
     	{
-        	QuicEventWaitForever(Channel->RecvList.REvent);	
+       	    QuicEventWaitForever(Channel->RecvList.REvent);	
     	}
 
         QuicDispatchLockAcquire(&Channel->RecvList.Lock);
-		if (QuicListIsEmpty(&Channel->RecvList.Data))
-		{
-			QuicDispatchLockRelease(&Channel->RecvList.Lock);
-			Length = 0;
-			goto End;
-		}
+	if (QuicListIsEmpty(&Channel->RecvList.Data))
+	{
+	    QuicDispatchLockRelease(&Channel->RecvList.Lock);
+	    Length = 0;
+	    goto End;
+	}
 
         Recv_Buffer* Buffer = QUIC_CONTAINING_RECORD(QuicListRemoveHead(&Channel->RecvList.Data), Recv_Buffer, Node);
         if (Buffer->FreeAddr != NULL)
         {
-			QuicRecvDataReturn(Buffer->FreeAddr);
-			QuicDispatchLockRelease(&Channel->RecvList.Lock);
+	    QuicRecvDataReturn(Buffer->FreeAddr);
+	    QuicDispatchLockRelease(&Channel->RecvList.Lock);
             continue;
         }
 
@@ -1697,28 +1695,27 @@ MsQuic_Recv(_In_ CHANNEL_DATA* Channel, _Inout_ uint8_t* Dest, _Outptr_ uint64_t
             QuicDispatchLockRelease(&Channel->RecvList.Lock);
             goto End;
         }
-        else
+
+        memcpy(&Dest[Offset], Buffer->Data, Buffer->Length);
+        Length += Buffer->Length;
+        Buffer->Node.Flink = NULL;
+        Offset += Buffer->Length;
+	if (Buffer->Finish) {
+	    __sync_sub_and_fetch(&Channel->RecvList.Count, 1);
+	}
+        if (Buffer->Length == Len)
         {
-            memcpy(&Dest[Offset], Buffer->Data, Buffer->Length);
-            Length += Buffer->Length;
-            Buffer->Node.Flink = NULL;
-            Offset += Buffer->Length;
-			if (Buffer->Finish) {
-				 __sync_sub_and_fetch(&Channel->RecvList.Count, 1);
-			}
-            if (Buffer->Length == Len)
-            {
-            	QuicFree(Buffer);
-				QuicDispatchLockRelease(&Channel->RecvList.Lock);
-               	goto End;
-            }
-
-            Len -= Buffer->Length;
             QuicFree(Buffer);
+	    QuicDispatchLockRelease(&Channel->RecvList.Lock);
+            goto End;
         }
-		QuicDispatchLockRelease(&Channel->RecvList.Lock);
 
-	}while (__sync_fetch_and_sub(&Channel->RecvList.Count, 0));
+        Len -= Buffer->Length;
+        QuicFree(Buffer);
+
+	QuicDispatchLockRelease(&Channel->RecvList.Lock);
+
+    } while (__sync_fetch_and_sub(&Channel->RecvList.Count, 0));
 
 End:
     return Length;
@@ -1729,17 +1726,17 @@ CHANNEL_DATA*
 QUIC_API
 MsQuic_Epoll_Create(_In_ QUIC_SOCKFD *Context)
 {
-	CHANNEL_DATA* Channel = QuicAlloc(sizeof(CHANNEL_DATA));
-	if (Channel == NULL)
-	{
-		return NULL;
-	}
-	QuicZeroMemory(Channel, sizeof(CHANNEL_DATA));
-	Channel->Context = Context;
+    CHANNEL_DATA* Channel = QuicAlloc(sizeof(CHANNEL_DATA));
+    if (Channel == NULL)
+    {
+	return NULL;
+    }
+    QuicZeroMemory(Channel, sizeof(CHANNEL_DATA));
+    Channel->Context = Context;
     QuicListInitializeHead(&Channel->RecvList.Data);
-	QuicEventInitialize(&Channel->RecvList.REvent, FALSE, FALSE);
-	QuicDispatchLockInitialize(&Channel->RecvList.Lock);
-	Context->NtyChannel = Channel;
+    QuicEventInitialize(&Channel->RecvList.REvent, FALSE, FALSE);
+    QuicDispatchLockInitialize(&Channel->RecvList.Lock);
+    Context->NtyChannel = Channel;
     return Channel;
 }
 
@@ -1752,11 +1749,11 @@ MsQuic_Epoll_Ctl(_In_ CHANNEL_DATA* EpChannel, _In_ int Op, _Inout_ CHANNEL_DATA
 	QUIC_SOCKFD* Context = EpChannel->Context;
 	if (Op == YMSQUIC_EPOLL_CTL_ADD)
 	{
-    	Notify_Mes* Buffer = QuicAlloc(sizeof(Notify_Mes));
-    	if (Buffer == NULL)
+    		Notify_Mes* Buffer = QuicAlloc(sizeof(Notify_Mes));
+    		if (Buffer == NULL)
    		{
-        	return -1;
-    	}
+        		return -1;
+    		}
 		QuicZeroMemory(Buffer, sizeof(Notify_Mes));			
 		Channel->EventType = Event->events;
 		Buffer->Channel = Channel;
