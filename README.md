@@ -123,7 +123,7 @@
 ======
 	Because Microsoft's QUIC relies on high environmental requirements when compiling in the Linux environment,
 	lower version systems may be incompatible and the compilation steps are cumbersome, 
-	so we have added a Ymsquic version adapted to the Linux system.
+	so we have added a Ymsquic version adapted to the Linux system and add call interfaces like POSIX Socket API.
 	
 	1: How to build Ymsquic
 	  Please refer to the BUILD.md file in the folder doc under the current path.

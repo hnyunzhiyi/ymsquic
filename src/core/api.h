@@ -322,8 +322,8 @@ _IRQL_requires_max_(PASSIVE_LEVEL)
 int
 QUIC_API
 MsQuic_Bind(_In_ CHANNEL_DATA* Channel,
-            _In_ const char* DestAddr,
-            _In_ uint32_t Port);
+            _In_ const struct sockaddr *addr,
+            _In_ socklen_t addrlen);
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void

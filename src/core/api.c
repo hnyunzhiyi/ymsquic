@@ -1836,11 +1836,13 @@ MsQuic_Socket(_In_ int Af, _In_ int Type, _In_ int Protocol, _In_ QUIC_SOCKFD* C
 _IRQL_requires_max_(PASSIVE_LEVEL)
 int
 QUIC_API
-MsQuic_Bind(_In_ CHANNEL_DATA* Channel, _In_ const char* DestAddr, _In_ uint32_t Port) {
+MsQuic_Bind(_In_ CHANNEL_DATA* Channel, _In_ const struct sockaddr *addr, _In_ socklen_t addrlen) {
 	QUIC_SOCKFD* Context = Channel->Context;
-	Context->Addr.Ipv4.sin_family = AF_INET;
-	Context->Addr.Ipv4.sin_port = htons(Port);
-	Context->Addr.Ipv4.sin_addr.s_addr = inet_addr(DestAddr);
+	if (addr->sa_family == AF_INET) {
+		memcpy(&Context->Addr.Ipv4, addr, sizeof(struct sockaddr_in));
+	} else if (addr->sa_family == AF_INET6) {
+		memcpy(&Context->Addr.Ipv6, addr, sizeof(struct sockaddr_in6));
+	}
 	return 0;
 }
 
