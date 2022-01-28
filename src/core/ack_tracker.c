@@ -43,41 +43,38 @@ _IRQL_requires_max_(DISPATCH_LEVEL)
 void
 QuicAckTrackerInitialize(
     _Inout_ QUIC_ACK_TRACKER* Tracker
-    )
-{
-    QuicRangeInitialize(
-        QUIC_MAX_RANGE_DUPLICATE_PACKETS,
-        &Tracker->PacketNumbersReceived);
+) {
+	QuicRangeInitialize(
+	    QUIC_MAX_RANGE_DUPLICATE_PACKETS,
+	    &Tracker->PacketNumbersReceived);
 
-    QuicRangeInitialize(
-        QUIC_MAX_RANGE_ACK_PACKETS,
-        &Tracker->PacketNumbersToAck);
+	QuicRangeInitialize(
+	    QUIC_MAX_RANGE_ACK_PACKETS,
+	    &Tracker->PacketNumbersToAck);
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicAckTrackerUninitialize(
     _Inout_ QUIC_ACK_TRACKER* Tracker
-    )
-{
-    QuicRangeUninitialize(&Tracker->PacketNumbersToAck);
-    QuicRangeUninitialize(&Tracker->PacketNumbersReceived);
+) {
+	QuicRangeUninitialize(&Tracker->PacketNumbersToAck);
+	QuicRangeUninitialize(&Tracker->PacketNumbersReceived);
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 void
 QuicAckTrackerReset(
     _Inout_ QUIC_ACK_TRACKER* Tracker
-    )
-{
-    Tracker->AckElicitingPacketsToAcknowledge = 0;
-    Tracker->LargestPacketNumberAcknowledged = 0;
-    Tracker->LargestPacketNumberRecvTime = 0;
-    Tracker->AlreadyWrittenAckFrame = FALSE;
-    Tracker->NonZeroRecvECN = FALSE;
-    QuicZeroMemory(&Tracker->ReceivedECN, sizeof(Tracker->ReceivedECN));
-    QuicRangeReset(&Tracker->PacketNumbersToAck);
-    QuicRangeReset(&Tracker->PacketNumbersReceived);
+) {
+	Tracker->AckElicitingPacketsToAcknowledge = 0;
+	Tracker->LargestPacketNumberAcknowledged = 0;
+	Tracker->LargestPacketNumberRecvTime = 0;
+	Tracker->AlreadyWrittenAckFrame = FALSE;
+	Tracker->NonZeroRecvECN = FALSE;
+	QuicZeroMemory(&Tracker->ReceivedECN, sizeof(Tracker->ReceivedECN));
+	QuicRangeReset(&Tracker->PacketNumbersToAck);
+	QuicRangeReset(&Tracker->PacketNumbersReceived);
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -85,12 +82,11 @@ BOOLEAN
 QuicAckTrackerAddPacketNumber(
     _Inout_ QUIC_ACK_TRACKER* Tracker,
     _In_ uint64_t PacketNumber
-    )
-{
-    BOOLEAN RangeUpdated;
-    return
-        QuicRangeAddRange(&Tracker->PacketNumbersReceived, PacketNumber, 1, &RangeUpdated) == NULL ||
-        !RangeUpdated;
+) {
+	BOOLEAN RangeUpdated;
+	return
+	    QuicRangeAddRange(&Tracker->PacketNumbersReceived, PacketNumber, 1, &RangeUpdated) == NULL ||
+	    !RangeUpdated;
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -98,114 +94,113 @@ void
 QuicAckTrackerAckPacket(
     _Inout_ QUIC_ACK_TRACKER* Tracker,
     _In_ uint64_t PacketNumber,
-	_In_ uint64_t RecvTimeUs,
+    _In_ uint64_t RecvTimeUs,
     _In_ QUIC_ECN_TYPE ECN,
     _In_ BOOLEAN AckElicitingPayload
-    )
-{
-    QUIC_CONNECTION* Connection = QuicAckTrackerGetPacketSpace(Tracker)->Connection;
-    _Analysis_assume_(Connection != NULL);
+) {
+	QUIC_CONNECTION* Connection = QuicAckTrackerGetPacketSpace(Tracker)->Connection;
+	_Analysis_assume_(Connection != NULL);
 
-    QUIC_DBG_ASSERT(PacketNumber <= QUIC_VAR_INT_MAX);
+	QUIC_DBG_ASSERT(PacketNumber <= QUIC_VAR_INT_MAX);
 
-    uint64_t CurLargestPacketNumber;
-    if (QuicRangeGetMaxSafe(&Tracker->PacketNumbersToAck, &CurLargestPacketNumber) &&
-        CurLargestPacketNumber > PacketNumber) {
-        //
-        // Any time the next expected packet number doesn't match the one we
-        // received, we consider it reordering.
-        //
-        Connection->Stats.Recv.ReorderedPackets++;
-    }
+	uint64_t CurLargestPacketNumber;
+	if (QuicRangeGetMaxSafe(&Tracker->PacketNumbersToAck, &CurLargestPacketNumber) &&
+	        CurLargestPacketNumber > PacketNumber) {
+		//
+		// Any time the next expected packet number doesn't match the one we
+		// received, we consider it reordering.
+		//
+		Connection->Stats.Recv.ReorderedPackets++;
+	}
 
-    if (!QuicRangeAddValue(&Tracker->PacketNumbersToAck, PacketNumber)) {
-        //
-        // Allocation failure. Fatal error for the connection in this case.
-        //
-        QuicConnTransportError(Connection, QUIC_ERROR_INTERNAL_ERROR);
-        return;
-    }
+	if (!QuicRangeAddValue(&Tracker->PacketNumbersToAck, PacketNumber)) {
+		//
+		// Allocation failure. Fatal error for the connection in this case.
+		//
+		QuicConnTransportError(Connection, QUIC_ERROR_INTERNAL_ERROR);
+		return;
+	}
 
-    QuicTraceLogVerbose(
-        "PacketRxMarkedForAck: [%c][RX][%lu] Marked for ACK (ECN=%hhu)",
-        PtkConnPre(Connection),
-        PacketNumber,
-        ECN);
+	QuicTraceLogVerbose(
+	    "PacketRxMarkedForAck: [%c][RX][%lu] Marked for ACK (ECN=%hhu)",
+	    PtkConnPre(Connection),
+	    PacketNumber,
+	    ECN);
 
-    BOOLEAN NewLargestPacketNumber =
-        PacketNumber == QuicRangeGetMax(&Tracker->PacketNumbersToAck);
-    if (NewLargestPacketNumber) {
-        Tracker->LargestPacketNumberRecvTime = RecvTimeUs;
-    }
+	BOOLEAN NewLargestPacketNumber =
+	    PacketNumber == QuicRangeGetMax(&Tracker->PacketNumbersToAck);
+	if (NewLargestPacketNumber) {
+		Tracker->LargestPacketNumberRecvTime = RecvTimeUs;
+	}
 
-    switch (ECN) {
-        case QUIC_ECN_ECT_1:
-            Tracker->NonZeroRecvECN = TRUE;
-            Tracker->ReceivedECN.ECT_1_Count++;
-            break;
-        case QUIC_ECN_ECT_0:
-            Tracker->NonZeroRecvECN = TRUE;
-            Tracker->ReceivedECN.ECT_0_Count++;
-            break;
-        case QUIC_ECN_CE:
-            Tracker->NonZeroRecvECN = TRUE;
-            Tracker->ReceivedECN.CE_Count++;
-            break;
-        default:
-            break;
-    }
+	switch (ECN) {
+		case QUIC_ECN_ECT_1:
+			Tracker->NonZeroRecvECN = TRUE;
+			Tracker->ReceivedECN.ECT_1_Count++;
+			break;
+		case QUIC_ECN_ECT_0:
+			Tracker->NonZeroRecvECN = TRUE;
+			Tracker->ReceivedECN.ECT_0_Count++;
+			break;
+		case QUIC_ECN_CE:
+			Tracker->NonZeroRecvECN = TRUE;
+			Tracker->ReceivedECN.CE_Count++;
+			break;
+		default:
+			break;
+	}
 
-    Tracker->AlreadyWrittenAckFrame = FALSE;
+	Tracker->AlreadyWrittenAckFrame = FALSE;
 
-    if (!AckElicitingPayload) {
-        goto Exit;
-    }
+	if (!AckElicitingPayload) {
+		goto Exit;
+	}
 
-    Tracker->AckElicitingPacketsToAcknowledge++;
+	Tracker->AckElicitingPacketsToAcknowledge++;
 
-    if (Connection->Send.SendFlags & QUIC_CONN_SEND_FLAG_ACK) {
-        goto Exit; // Already queued to send an ACK, no more work to do.
-    }
+	if (Connection->Send.SendFlags & QUIC_CONN_SEND_FLAG_ACK) {
+		goto Exit; // Already queued to send an ACK, no more work to do.
+	}
 
-    //
-    // There are several conditions where we decide to send an ACK immediately:
-    //
-    //   1. We have received QUIC_MIN_ACK_SEND_NUMBER ACK eliciting packets.
-    //   2. We received an ACK eliciting packet that doesn't directly follow the
-    //      previously received packet number. So we assume there might have
-    //      been loss and should indicate this info to the peer.
-    //   3. The delayed ACK timer fires after the configured time.
-    //
-    // If we don't queue an immediate ACK and this is the first ACK eliciting
-    // packet received, we make sure the ACK delay timer is started.
-    //
+	//
+	// There are several conditions where we decide to send an ACK immediately:
+	//
+	//   1. We have received QUIC_MIN_ACK_SEND_NUMBER ACK eliciting packets.
+	//   2. We received an ACK eliciting packet that doesn't directly follow the
+	//      previously received packet number. So we assume there might have
+	//      been loss and should indicate this info to the peer.
+	//   3. The delayed ACK timer fires after the configured time.
+	//
+	// If we don't queue an immediate ACK and this is the first ACK eliciting
+	// packet received, we make sure the ACK delay timer is started.
+	//
 
-    if (Tracker->AckElicitingPacketsToAcknowledge >= (uint16_t)(Connection->PacketTolerance) ||
-		(!Connection->State.IgnoreReordering &&
-        (NewLargestPacketNumber &&
-         QuicRangeSize(&Tracker->PacketNumbersToAck) > 1 && // There are more than two ranges, i.e. a gap somewhere.
-            QuicRangeGet(
-            &Tracker->PacketNumbersToAck,
-         QuicRangeSize(&Tracker->PacketNumbersToAck) - 1)->Count == 1))) { // The gap is right before the last packet number.
-        //
-        // Always send an ACK immediately if we have received enough ACK
-        // eliciting packets OR the latest one indicate a gap in the packet
-        // numbers, which likely means there was loss.
-        //
-        QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_ACK);
+	if (Tracker->AckElicitingPacketsToAcknowledge >= (uint16_t)(Connection->PacketTolerance) ||
+	        (!Connection->State.IgnoreReordering &&
+	         (NewLargestPacketNumber &&
+	          QuicRangeSize(&Tracker->PacketNumbersToAck) > 1 && // There are more than two ranges, i.e. a gap somewhere.
+	          QuicRangeGet(
+	              &Tracker->PacketNumbersToAck,
+	              QuicRangeSize(&Tracker->PacketNumbersToAck) - 1)->Count == 1))) { // The gap is right before the last packet number.
+		//
+		// Always send an ACK immediately if we have received enough ACK
+		// eliciting packets OR the latest one indicate a gap in the packet
+		// numbers, which likely means there was loss.
+		//
+		QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_ACK);
 
-    } else if (Tracker->AckElicitingPacketsToAcknowledge == 1) {
-        //
-        // We now have ACK eliciting payload to acknowledge but haven't met the
-        // criteria to send an ACK frame immediately, so just ensure the delayed
-        // ACK timer is running.
-        //
-        QuicSendStartDelayedAckTimer(&Connection->Send);
-    }
+	} else if (Tracker->AckElicitingPacketsToAcknowledge == 1) {
+		//
+		// We now have ACK eliciting payload to acknowledge but haven't met the
+		// criteria to send an ACK frame immediately, so just ensure the delayed
+		// ACK timer is running.
+		//
+		QuicSendStartDelayedAckTimer(&Connection->Send);
+	}
 
 Exit:
 
-    QuicSendValidate(&Connection->Send);
+	QuicSendValidate(&Connection->Send);
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -213,39 +208,38 @@ BOOLEAN
 QuicAckTrackerAckFrameEncode(
     _Inout_ QUIC_ACK_TRACKER* Tracker,
     _Inout_ QUIC_PACKET_BUILDER* Builder
-    )
-{
-    QUIC_DBG_ASSERT(QuicAckTrackerHasPacketsToAck(Tracker));
+) {
+	QUIC_DBG_ASSERT(QuicAckTrackerHasPacketsToAck(Tracker));
 
-    uint64_t AckDelay =
-        QuicTimeDiff64(Tracker->LargestPacketNumberRecvTime, QuicTimeUs64());
+	uint64_t AckDelay =
+	    QuicTimeDiff64(Tracker->LargestPacketNumberRecvTime, QuicTimeUs64());
 
-    AckDelay >>= Builder->Connection->AckDelayExponent;
+	AckDelay >>= Builder->Connection->AckDelayExponent;
 
-    if (!QuicAckFrameEncode(
-            &Tracker->PacketNumbersToAck,
-            AckDelay,
-            Tracker->NonZeroRecvECN ?
-                &Tracker->ReceivedECN :
-                NULL,
-            &Builder->DatagramLength,
-            (uint16_t)Builder->Datagram->Length - Builder->EncryptionOverhead,
-            Builder->Datagram->Buffer)) {
-        return FALSE;
-    }
+	if (!QuicAckFrameEncode(
+	            &Tracker->PacketNumbersToAck,
+	            AckDelay,
+	            Tracker->NonZeroRecvECN ?
+	            &Tracker->ReceivedECN :
+	            NULL,
+	            &Builder->DatagramLength,
+	            (uint16_t)Builder->Datagram->Length - Builder->EncryptionOverhead,
+	            Builder->Datagram->Buffer)) {
+		return FALSE;
+	}
 
-    if (Tracker->AckElicitingPacketsToAcknowledge) {
-        Tracker->AckElicitingPacketsToAcknowledge = 0;
-        QuicSendUpdateAckState(&Builder->Connection->Send);
-    }
+	if (Tracker->AckElicitingPacketsToAcknowledge) {
+		Tracker->AckElicitingPacketsToAcknowledge = 0;
+		QuicSendUpdateAckState(&Builder->Connection->Send);
+	}
 
-    Tracker->AlreadyWrittenAckFrame = TRUE;
-    Tracker->LargestPacketNumberAcknowledged =
-        Builder->Metadata->Frames[Builder->Metadata->FrameCount].ACK.LargestAckedPacketNumber =
-        QuicRangeGetMax(&Tracker->PacketNumbersToAck);
-    (void)QuicPacketBuilderAddFrame(Builder, QUIC_FRAME_ACK, FALSE);
+	Tracker->AlreadyWrittenAckFrame = TRUE;
+	Tracker->LargestPacketNumberAcknowledged =
+	    Builder->Metadata->Frames[Builder->Metadata->FrameCount].ACK.LargestAckedPacketNumber =
+	        QuicRangeGetMax(&Tracker->PacketNumbersToAck);
+	(void)QuicPacketBuilderAddFrame(Builder, QUIC_FRAME_ACK, FALSE);
 
-    return TRUE;
+	return TRUE;
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -253,28 +247,27 @@ void
 QuicAckTrackerOnAckFrameAcked(
     _Inout_ QUIC_ACK_TRACKER* Tracker,
     _In_ uint64_t LargestAckedPacketNumber
-    )
-{
-    QUIC_CONNECTION* Connection = QuicAckTrackerGetPacketSpace(Tracker)->Connection;
+) {
+	QUIC_CONNECTION* Connection = QuicAckTrackerGetPacketSpace(Tracker)->Connection;
 
-    //
-    // Drop all packet numbers less than or equal to the largest acknowledged
-    // packet number.
-    //
-    QuicRangeSetMin(
-        &Tracker->PacketNumbersToAck,
-        LargestAckedPacketNumber + 1);
+	//
+	// Drop all packet numbers less than or equal to the largest acknowledged
+	// packet number.
+	//
+	QuicRangeSetMin(
+	    &Tracker->PacketNumbersToAck,
+	    LargestAckedPacketNumber + 1);
 
-    if (!QuicAckTrackerHasPacketsToAck(Tracker) &&
-        Tracker->AckElicitingPacketsToAcknowledge) {
-        //
-        // If we received packets out of order and ended up sending an ACK for
-        // larger packet numbers before receiving the smaller ones, it's
-        // possible we will remove all the ACK ranges even though we haven't
-        // acknowledged the smaller one yet. In that case, we need to make sure
-        // have all other state match up to the ranges.
-        //
-        Tracker->AckElicitingPacketsToAcknowledge = 0;
-        QuicSendUpdateAckState(&Connection->Send);
-    }
+	if (!QuicAckTrackerHasPacketsToAck(Tracker) &&
+	        Tracker->AckElicitingPacketsToAcknowledge) {
+		//
+		// If we received packets out of order and ended up sending an ACK for
+		// larger packet numbers before receiving the smaller ones, it's
+		// possible we will remove all the ACK ranges even though we haven't
+		// acknowledged the smaller one yet. In that case, we need to make sure
+		// have all other state match up to the ranges.
+		//
+		Tracker->AckElicitingPacketsToAcknowledge = 0;
+		QuicSendUpdateAckState(&Connection->Send);
+	}
 }
