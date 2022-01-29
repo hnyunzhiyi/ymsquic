@@ -37,13 +37,13 @@ int getHostNameIpAddress(const char* domainName, struct sockaddr* addr) {
 		switch (rp->ai_family) {
 			case AF_INET:
 				ptr = &((struct sockaddr_in*) rp->ai_addr)->sin_addr;;
-				((struct sockaddr_in*) addr)->ai_family = AF_INET;
+				((struct sockaddr_in*) addr)->sin_family = AF_INET;
 				memcpy(&((struct sockaddr_in*) addr)->sin_addr, ptr, sizeof(struct in_addr));
 				inet_ntop(rp->ai_family, ptr, addrstr, 100);
 				break;
 			case AF_INET6:
 				ptr = &((struct sockaddr_in6*) rp->ai_addr)->sin6_addr;
-				((struct sockaddr_in*) addr)->ai_family = AF_INET6;
+				((struct sockaddr_in*) addr)->sin6_family = AF_INET6;
 				memcpy(&((struct sockaddr_in6*) addr)->sin6_addr, ptr, sizeof(struct in6_addr));
 				inet_ntop(rp->ai_family, ptr, addrstr, 100);
 				break;
@@ -63,7 +63,8 @@ int main(int argc, char *argv[]) {
 	int State = 0;
 	QUIC_BUFFER SendBuffer;
 	int ConnectState = 0;
-	struct sockaddr_in addr;
+	struct sockaddr_in6 addr;
+	struct sockaddr_in * paddr = (struct sockaddr_in *) &addr;
 
 	struct epoll_event Events[1024], Event;
 	Notify_Mes* Ptr = NULL;
@@ -89,8 +90,11 @@ int main(int argc, char *argv[]) {
 	CHANNEL_DATA* MainChannel = (CHANNEL_DATA*)MsQuic->TcpSocket(PF_INET, SOCK_STREAM, 0, &Context);
 
 	memset(&addr, 0, sizeof(addr));
-	getHostNameIpAddress(Target, &addr);
-	addr.sin_port = htons(Port);
+	getHostNameIpAddress(Target, (struct sockaddr *) &addr);
+	if (addr.sin6_family == AF_INET)
+		paddr->sin_port = htons(Port);
+	else if (addr.sin6_family == AF_INET6)
+		addr.sin6_port = htons(Port);
 
 	MsQuic->TcpBind(MainChannel, (struct sockaddr *) &addr, sizeof(addr));
 
