@@ -1749,10 +1749,10 @@ MsQuic_GetPeerName(_In_ CHANNEL_DATA* Channel, _Inout_ struct sockaddr* PeerAddr
 	        &AddrLen,
 	        &Addr);
 	if (QUIC_SUCCEEDED(Status)) {
-		if (Addr.si_family == QUIC_ADDRESS_FAMILY_INET) {
-			memcpy(PeerAddr, &Addr.Ipv4, addrlen);
+		if (Addr.Ip.sa_family == QUIC_ADDRESS_FAMILY_INET) {
+			memcpy(PeerAddr, &Addr.Ipv4, *addrlen);
 		} else {
-			memcpy(PeerAddr, &Addr.Ipv6, addrlen);
+			memcpy(PeerAddr, &Addr.Ipv6, *addrlen);
 		}
 		return 0;
 	}
@@ -1777,10 +1777,10 @@ MsQuic_GetSockName(_In_ CHANNEL_DATA* Channel, _Inout_ struct sockaddr* LocalAdd
 	        &Addr);
 
 	if (QUIC_SUCCEEDED(Status)) {
-		if (Addr.si_family == QUIC_ADDRESS_FAMILY_INET) {
-			memcpy(LocalAddr, &Addr.Ipv4, addrlen);
+		if (Addr.Ip.sa_family == QUIC_ADDRESS_FAMILY_INET) {
+			memcpy(LocalAddr, &Addr.Ipv4, *addrlen);
 		} else {
-			memcpy(LocalAddr, &Addr.Ipv6, addrlen);
+			memcpy(LocalAddr, &Addr.Ipv6, *addrlen);
 		}
 		return 0;
 	}
