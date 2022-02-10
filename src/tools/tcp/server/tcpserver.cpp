@@ -43,13 +43,13 @@ int getHostNameIpAddress(const char* domainName, struct sockaddr* addr) {
 				break;
 			case AF_INET6:
 				ptr = &((struct sockaddr_in6*) rp->ai_addr)->sin6_addr;
-				((struct sockaddr_in*) addr)->sin6_family = AF_INET6;
+				((struct sockaddr_in6*) addr)->sin6_family = AF_INET6;
 				memcpy(&((struct sockaddr_in6*) addr)->sin6_addr, ptr, sizeof(struct in6_addr));
 				inet_ntop(rp->ai_family, ptr, addrstr, 100);
 				break;
 		}
 
-		printf("IPv%d  address = %s", (rp->ai_family == AF_INET6 ? "6" : "4"), addrstr);
+		printf("IPv%d  address = %s", rp->ai_family == AF_INET6 ? 6 : 4, addrstr);
 	}
 
 	freeaddrinfo(result);           /* No longer needed */
