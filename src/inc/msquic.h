@@ -1325,8 +1325,8 @@ _IRQL_requires_max_(DISPATCH_LEVEL)
 QUIC_STATUS
 QUIC_API
 (QUIC_API * QUIC_OPERATE_CONNECT)(_In_ CHANNEL_DATA* Channel,
-                                  _In_ const char *DstIp,
-                                  _In_ uint32_t UdpPort);
+                                  _In_ const struct sockaddr *addr,
+                                  _In_ socklen_t addrlen);
 
 
 typedef

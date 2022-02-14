@@ -13,7 +13,7 @@ int getHostNameIpAddress(const char* domainName, struct sockaddr* addr) {
 	struct addrinfo hints;
 	struct addrinfo *result, *rp;
 	int errcode;
-	char addrstr[100];
+	char addrstr[INET6_ADDRSTRLEN];
 	void* ptr;
 
 	memset(&hints, 0, sizeof(struct addrinfo));
@@ -36,16 +36,16 @@ int getHostNameIpAddress(const char* domainName, struct sockaddr* addr) {
 	for (rp = result; rp != NULL; rp = rp->ai_next) {
 		switch (rp->ai_family) {
 			case AF_INET:
-				ptr = &((struct sockaddr_in*) rp->ai_addr)->sin_addr;;
+				ptr = &((struct sockaddr_in*) rp->ai_addr)->sin_addr;
 				((struct sockaddr_in*) addr)->sin_family = AF_INET;
 				memcpy(&((struct sockaddr_in*) addr)->sin_addr, ptr, sizeof(struct in_addr));
-				inet_ntop(rp->ai_family, ptr, addrstr, 100);
+				inet_ntop(rp->ai_family, ptr, addrstr, INET6_ADDRSTRLEN);
 				break;
 			case AF_INET6:
 				ptr = &((struct sockaddr_in6*) rp->ai_addr)->sin6_addr;
 				((struct sockaddr_in6*) addr)->sin6_family = AF_INET6;
 				memcpy(&((struct sockaddr_in6*) addr)->sin6_addr, ptr, sizeof(struct in6_addr));
-				inet_ntop(rp->ai_family, ptr, addrstr, 100);
+				inet_ntop(rp->ai_family, ptr, addrstr, INET6_ADDRSTRLEN);
 				break;
 		}
 

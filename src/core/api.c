@@ -2270,10 +2270,13 @@ MsQuic_CSInit(_In_ QUIC_SOCKFD* Context, _In_ HQUIC ConnectID, _In_ int Mode) {
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QUIC_API
-MsQuic_Connect(_In_ CHANNEL_DATA* Channel, _In_ const char* DstIp, _In_ uint32_t UdpPort) {
+MsQuic_Connect(_In_ CHANNEL_DATA* Channel, _In_ const struct sockaddr *addr, _In_ socklen_t addrlen) {
 	QUIC_SOCKFD* Context = Channel->Context;
 	QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
 	QUIC_CONNECTION* Conn = NULL;
+	QUIC_ADDRESS_FAMILY Family = QUIC_ADDRESS_FAMILY_UNSPEC;
+	char DstIp[INET6_ADDRSTRLEN];
+	uint16_t UdpPort;
 
 	if (QUIC_FAILED(Status = MsQuic_Parm_Init(CLIENT, Channel))) {
 		QuicTraceLogError("Client parameter init failed, 0x%x!\n", Status);
@@ -2286,7 +2289,25 @@ MsQuic_Connect(_In_ CHANNEL_DATA* Channel, _In_ const char* DstIp, _In_ uint32_t
 	}
 
 	((QUIC_CONNECTION*)(Channel->Connect))->Attribute = Context->MChannel.Attribute;
-	if (QUIC_FAILED(Status = Context->MsQuic->ConnectionStart(Channel->Connect, Context->Configuration, QUIC_ADDRESS_FAMILY_UNSPEC,
+	switch (addr->sa_family) {
+		case AF_INET:
+			Family = QUIC_ADDRESS_FAMILY_INET;
+			inet_ntop(addr->sa_family,
+			          &((struct sockaddr_in*) addr)->sin_addr,
+			          DstIp,
+			          INET6_ADDRSTRLEN);
+			UdpPort = ntohs(((struct sockaddr_in*) addr)->sin_port);
+			break;
+		case AF_INET6:
+			Family = QUIC_ADDRESS_FAMILY_INET6;
+			inet_ntop(addr->sa_family,
+			          &((struct sockaddr_in6*) addr)->sin6_addr,
+			          DstIp,
+			          INET6_ADDRSTRLEN);
+			UdpPort = ntohs(((struct sockaddr_in6*) addr)->sin6_port);
+			break;
+	}
+	if (QUIC_FAILED(Status = Context->MsQuic->ConnectionStart(Channel->Connect, Context->Configuration, Family,
 	                         DstIp,  UdpPort))) {
 		QuicTraceLogError("ConnectionStart failed, 0x%x!\n", Status);
 		goto End;

@@ -362,8 +362,8 @@ _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QUIC_API
 MsQuic_Connect(_In_ CHANNEL_DATA* Channel,
-               _In_ const char *DstIp,
-               _In_ uint32_t UdpPort);
+               _In_ const struct sockaddr *addr,
+               _In_ socklen_t addrlen);
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
