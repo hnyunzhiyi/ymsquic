@@ -2275,8 +2275,8 @@ MsQuic_Connect(_In_ CHANNEL_DATA* Channel, _In_ const struct sockaddr *addr, _In
 	QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
 	QUIC_CONNECTION* Conn = NULL;
 	QUIC_ADDRESS_FAMILY Family = QUIC_ADDRESS_FAMILY_UNSPEC;
-	char DstIp[INET6_ADDRSTRLEN];
-	uint16_t UdpPort;
+	char DstIp[INET6_ADDRSTRLEN] = {0};
+	uint16_t UdpPort = 0;
 
 	if (QUIC_FAILED(Status = MsQuic_Parm_Init(CLIENT, Channel))) {
 		QuicTraceLogError("Client parameter init failed, 0x%x!\n", Status);
