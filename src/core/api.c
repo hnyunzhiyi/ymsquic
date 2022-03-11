@@ -2273,7 +2273,6 @@ QUIC_API
 MsQuic_Connect(_In_ CHANNEL_DATA* Channel, _In_ const struct sockaddr *addr, _In_ socklen_t addrlen) {
 	QUIC_SOCKFD* Context = Channel->Context;
 	QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
-	QUIC_CONNECTION* Conn = NULL;
 	QUIC_ADDRESS_FAMILY Family = QUIC_ADDRESS_FAMILY_UNSPEC;
 	char DstIp[INET6_ADDRSTRLEN] = {0};
 	uint16_t UdpPort = 0;
@@ -2290,23 +2289,30 @@ MsQuic_Connect(_In_ CHANNEL_DATA* Channel, _In_ const struct sockaddr *addr, _In
 
 	((QUIC_CONNECTION*)(Channel->Connect))->Attribute = Context->MChannel.Attribute;
 	switch (addr->sa_family) {
-		case AF_INET:
-			Family = QUIC_ADDRESS_FAMILY_INET;
+		case AF_INET: {
+			QUIC_PATH* Path = &((QUIC_CONNECTION*)(Channel->Connect))->Paths[0];
+			memcpy(&Path->RemoteAddress.Ipv4, addr, sizeof(struct sockaddr_in));
+			Path->RemoteAddress.Ipv4.sin_family = Family = QUIC_ADDRESS_FAMILY_INET;
 			inet_ntop(addr->sa_family,
 			          &((struct sockaddr_in*) addr)->sin_addr,
 			          DstIp,
 			          INET6_ADDRSTRLEN);
 			UdpPort = ntohs(((struct sockaddr_in*) addr)->sin_port);
 			break;
-		case AF_INET6:
-			Family = QUIC_ADDRESS_FAMILY_INET6;
+		}
+		case AF_INET6: {
+			QUIC_PATH* Path = &((QUIC_CONNECTION*)(Channel->Connect))->Paths[0];
+			memcpy(&Path->RemoteAddress.Ipv6, addr, sizeof(struct sockaddr_in6));
+			Path->RemoteAddress.Ipv4.sin_family = Family = QUIC_ADDRESS_FAMILY_INET6;
 			inet_ntop(addr->sa_family,
 			          &((struct sockaddr_in6*) addr)->sin6_addr,
 			          DstIp,
 			          INET6_ADDRSTRLEN);
 			UdpPort = ntohs(((struct sockaddr_in6*) addr)->sin6_port);
 			break;
+		}
 	}
+	((QUIC_CONNECTION*)(Channel->Connect))->State.RemoteAddressSet = TRUE;
 	if (QUIC_FAILED(Status = Context->MsQuic->ConnectionStart(Channel->Connect, Context->Configuration, Family,
 	                         DstIp,  UdpPort))) {
 		QuicTraceLogError("ConnectionStart failed, 0x%x!\n", Status);
