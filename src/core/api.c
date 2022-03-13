@@ -126,8 +126,7 @@ MsQuicConnectionClose(
 	} else {
 
 		QUIC_EVENT CompletionEvent;
-		QUIC_OPERATION Oper;
-		QuicZeroMemory(&Oper, sizeof(QUIC_OPERATION));
+		QUIC_OPERATION Oper = { 0 };
 		QUIC_API_CONTEXT ApiCtx;
 
 		Oper.Type = QUIC_OPER_TYPE_API_CALL;
@@ -700,8 +699,7 @@ MsQuicStreamClose(
 		}
 
 		QUIC_EVENT CompletionEvent;
-		QUIC_OPERATION Oper;
-		QuicZeroMemory(&Oper, sizeof(QUIC_OPERATION));
+		QUIC_OPERATION Oper = { 0 };
 		QUIC_API_CONTEXT ApiCtx;
 
 		Oper.Type = QUIC_OPER_TYPE_API_CALL;
@@ -813,8 +811,7 @@ MsQuicStreamStart(
 		QUIC_CONN_VERIFY(Connection, !Connection->State.HandleClosed);
 
 		QUIC_EVENT CompletionEvent;
-		QUIC_OPERATION Oper;
-		QuicZeroMemory(&Oper, sizeof(QUIC_OPERATION));
+		QUIC_OPERATION Oper = { 0 };
 		QUIC_API_CONTEXT ApiCtx;
 
 		Oper.Type = QUIC_OPER_TYPE_API_CALL;
@@ -1299,8 +1296,7 @@ MsQuicSetParam(
 
 	QUIC_CONN_VERIFY(Connection, !Connection->State.HandleClosed);
 
-	QUIC_OPERATION Oper;
-	QuicZeroMemory(&Oper, sizeof(QUIC_OPERATION));
+	QUIC_OPERATION Oper = { 0 };
 	QUIC_API_CONTEXT ApiCtx;
 
 	Oper.Type = QUIC_OPER_TYPE_API_CALL;
@@ -1430,8 +1426,7 @@ MsQuicGetParam(
 
 	QUIC_CONN_VERIFY(Connection, !Connection->State.HandleClosed);
 
-	QUIC_OPERATION Oper;
-	QuicZeroMemory(&Oper, sizeof(QUIC_OPERATION));
+	QUIC_OPERATION Oper = { 0 };
 	QUIC_API_CONTEXT ApiCtx;
 
 	Oper.Type = QUIC_OPER_TYPE_API_CALL;
